@@ -1,0 +1,32 @@
+# Byte-compiled / Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment & Doppler Local State
+.env
+.env.local
+*.pem
+.doppler/
+
+# IDE & macOS System Files
+.vscode/
+.idea/
+.DS_Store
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Model Artifacts (Never commit binaries)
+*.joblib
+*.pkl
+*.json.model
