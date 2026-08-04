@@ -1,4 +1,4 @@
-"""Configuration settings for spotq-eta-service using Pydantic Settings."""
+"""Configuration settings for spotq-eta-service loaded dynamically via Infisical."""
 
 from enum import Enum
 from typing import Optional
@@ -7,17 +7,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class EnvironmentType(str, Enum):
-    """Supported application environment types."""
+    """Application environment modes."""
 
     DEVELOPMENT = "development"
     TESTING = "testing"
+    STAGING = "staging"
     PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
-    """Application settings loaded dynamically from environment variables/Doppler."""
+    """Application settings mapped to Infisical runtime environment variables."""
 
-    # Application Configuration
+    # Core Application Configuration
     ENVIRONMENT: EnvironmentType = Field(
         default=EnvironmentType.DEVELOPMENT,
         description="Deployment environment mode",
@@ -27,7 +28,7 @@ class Settings(BaseSettings):
 
     # Redis Feature Store Configuration
     REDIS_HOST: str = Field(
-        default="localhost", description="Redis host address for feature store"
+        default="localhost", description="Redis host address"
     )
     REDIS_PORT: int = Field(default=6379, description="Redis port")
     REDIS_PASSWORD: Optional[str] = Field(
@@ -43,10 +44,10 @@ class Settings(BaseSettings):
         default="spotq_eta_db", description="MongoDB database name"
     )
 
-    # Machine Learning Model Configuration
+    # XGBoost Machine Learning Artifact Path
     MODEL_PATH: str = Field(
         default="app/infrastructure/ml_models/artifacts/eta_model_v1.json",
-        description="File path to the serialized XGBoost model artifact",
+        description="Path to serialized XGBoost model artifact",
     )
 
     model_config = SettingsConfigDict(
