@@ -959,6 +959,14 @@ dev = [
     { name = "ruff" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.2.0,<25.0.0" },
@@ -978,6 +986,14 @@ requires-dist = [
     { name = "xgboost", specifier = ">=2.0.3,<2.1.0" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27.2" },
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23.8" },
+    { name = "ruff", specifier = ">=0.3.7" },
+]
 
 [[package]]
 name = "starlette"

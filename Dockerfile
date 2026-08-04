@@ -8,7 +8,7 @@ WORKDIR /app
 # Install uv for fast wheel compilation
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Copy dependency manifests
+# Copy dependency manifests and application code
 COPY pyproject.toml README.md ./
 COPY app ./app
 
@@ -21,6 +21,11 @@ RUN uv pip install --system --no-cache .
 FROM python:3.11-slim AS runner
 
 WORKDIR /app
+
+# Install curl for container health check probe
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root system user for security
 RUN groupadd -r appgroup && useradd -r -g appgroup -u 1001 appuser
@@ -37,6 +42,10 @@ USER appuser
 
 # Expose microservice HTTP port
 EXPOSE 8000
+
+# Built-in container health diagnostic probe
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/healthz || exit 1
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
