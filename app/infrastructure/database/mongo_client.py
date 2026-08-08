@@ -49,3 +49,7 @@ class MongoManager:
 
 
 mongo_manager = MongoManager()
+
+def get_mongo_manager() -> MongoManager:
+    """FastAPI dependency provider for MongoManager."""
+    return mongo_manager

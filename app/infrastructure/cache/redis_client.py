@@ -48,3 +48,7 @@ class RedisManager:
 
 
 redis_manager = RedisManager()
+
+def get_redis_manager() -> RedisManager:
+    """FastAPI dependency provider for RedisManager."""
+    return redis_manager

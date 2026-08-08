@@ -33,3 +33,7 @@ class ModelLoader:
 
 
 model_loader = ModelLoader()
+
+def get_model_loader() -> ModelLoader:
+    """FastAPI dependency provider for ModelLoader."""
+    return model_loader
