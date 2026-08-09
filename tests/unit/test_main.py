@@ -4,17 +4,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from main import app
+from app.main import app
 
 
 @pytest.fixture
 def mock_infrastructure():
     """Mock external dependency connections for lifespan execution."""
-    with patch("main.redis_manager.connect", new_callable=AsyncMock) as mock_redis_conn, \
-         patch("main.redis_manager.disconnect", new_callable=AsyncMock) as mock_redis_disc, \
-         patch("main.mongo_manager.connect", new_callable=AsyncMock) as mock_mongo_conn, \
-         patch("main.mongo_manager.disconnect", new_callable=AsyncMock) as mock_mongo_disc, \
-         patch("main.model_loader.load_model", return_value=True) as mock_load_model:
+    with patch("app.main.redis_manager.connect", new_callable=AsyncMock) as mock_redis_conn, \
+         patch("app.main.redis_manager.disconnect", new_callable=AsyncMock) as mock_redis_disc, \
+         patch("app.main.mongo_manager.connect", new_callable=AsyncMock) as mock_mongo_conn, \
+         patch("app.main.mongo_manager.disconnect", new_callable=AsyncMock) as mock_mongo_disc, \
+         patch("app.main.model_loader.load_model", return_value=True) as mock_load_model:
         yield {
             "redis_conn": mock_redis_conn,
             "redis_disc": mock_redis_disc,

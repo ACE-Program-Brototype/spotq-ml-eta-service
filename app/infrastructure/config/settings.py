@@ -1,4 +1,4 @@
-"""Configuration settings for spotq-eta-service loaded dynamically via Infisical."""
+"""Configuration settings for spotq-eta-service loaded dynamically via Infiscial."""
 
 from enum import Enum
 from typing import Optional
@@ -16,7 +16,7 @@ class EnvironmentType(str, Enum):
 
 
 class Settings(BaseSettings):
-    """Application settings mapped to Infisical runtime environment variables."""
+    """Application settings mapped to Infiscial runtime environment variables."""
 
     # Core Application Configuration
     ENVIRONMENT: EnvironmentType = Field(
@@ -26,11 +26,14 @@ class Settings(BaseSettings):
     PORT: int = Field(default=8000, description="Service HTTP port")
     LOG_LEVEL: str = Field(default="INFO", description="Logging output level")
 
-    # Redis Feature Store Configuration
+    # Redis Cloud Configuration
     REDIS_HOST: str = Field(
         default="localhost", description="Redis host address"
     )
     REDIS_PORT: int = Field(default=6379, description="Redis port")
+    REDIS_USERNAME: str = Field(
+        default="default", description="Redis username"
+    )
     REDIS_PASSWORD: Optional[str] = Field(
         default=None, description="Redis authentication password"
     )

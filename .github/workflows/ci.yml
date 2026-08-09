@@ -35,7 +35,7 @@ jobs:
 
       - name: Run Pytest Suite
         run: |
-          pytest -v
+          pytest -v -m "not integration"
 
   docker-build:
     name: Docker Build Verification

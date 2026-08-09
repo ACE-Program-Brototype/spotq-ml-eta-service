@@ -7,7 +7,7 @@ from app.infrastructure.logging.logger import logger
 
 
 class RedisManager:
-    """Manages connection pooling and health checks for Redis Feature Store."""
+    """Manages connection pooling and health checks for Redis Cloud Feature Store."""
 
     def __init__(self):
         self.client: aioredis.Redis | None = None
@@ -18,14 +18,15 @@ class RedisManager:
             self.client = aioredis.Redis(
                 host=settings.REDIS_HOST,
                 port=settings.REDIS_PORT,
+                username=settings.REDIS_USERNAME,
                 password=settings.REDIS_PASSWORD,
                 decode_responses=True,
                 socket_timeout=1.0,
             )
             await self.client.ping()
-            logger.info("Connected to Redis Feature Store")
+            logger.info("Connected to Redis Cloud Feature Store")
         except Exception as exc:
-            logger.warning("Unable to connect to Redis Feature Store", error=str(exc))
+            logger.warning("Unable to connect to Redis Cloud Feature Store", error=str(exc))
 
     async def disconnect(self) -> None:
         """Close Redis connection pool gracefully."""
