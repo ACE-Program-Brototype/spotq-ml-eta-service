@@ -17,14 +17,18 @@ spotq-eta-service/
 │   │   ├── cache/               # Redis Feature Store implementation
 │   │   ├── database/            # MongoDB Ingestion Buffer implementation
 │   │   ├── ml_models/           # XGBoost model loader (.json artifact)
-│   │   ├── logger/              # Structlog JSON logger targeting Loki
+│   │   │   └── artifacts/       # Model binary files (eta_model_v1.json)
+│   │   ├── logging/             # Structlog JSON logger targeting Loki
 │   │   └── observability/       # Prometheus metrics instrumentator
 │   ├── presentation/            # Entrypoints & HTTP Layer
 │   └── shared/                  # Cross-Cutting Utilities
 ├── tests/                       
 │   ├── unit/                    # Fast isolated unit tests (mocked dependencies)
 │   └── integration/             # Live cloud integration tests (Redis & MongoDB Atlas)
-├── Dockerfile                   # Multi-stage production container build
+├── Development Protection.json  # GitHub branch protection policy (Development)
+├── Main Protection.json         # GitHub branch protection policy (Main)
+├── Staging Protection.json      # GitHub branch protection policy (Staging)
+├── Dockerfile                   # Hardened multi-stage container build with Infiscial
 ├── docker-compose.dev.yml       # Local development multi-container setup
 ├── pyproject.toml               # Project metadata and dependencies
 └── README.md                    # Project documentation
@@ -75,7 +79,7 @@ This service uses Infiscial for secure environment variable management.
 1. Install the Infiscial CLI and log in:
 
 ```bash
-infiscial login
+infisical login
 
 ```
 
@@ -88,28 +92,32 @@ infisical run -- uvicorn app.main:app --reload --port 8000
 
 ---
 
-## Docker Usage
+## Docker Usage & Infiscial Deployment
 
-To spin up the complete local development stack including Redis, MongoDB, and the ETA microservice:
+The production Dockerfile is built using a secure multi-stage pipeline featuring a built-in Infiscial CLI runner.
 
-1. Generate the model artifact stub (if required):
+### 1. Build the Container Image
 
 ```bash
-python scripts/generate_dummy_model.py
+docker build -t spotq-eta-service:latest .
 
 ```
 
-2. Build and run containers in detached mode:
+### 2. Run Locally with a Service Token
+
+Pass your Infiscial Service Token to spin up the container with secure runtime secret injection:
 
 ```bash
-docker compose -f docker-compose.dev.yml up --build -d
+docker run --rm -p 8000:8000 \
+  -e INFISICAL_TOKEN="st.your-service-token-here" \
+  spotq-eta-service:latest
 
 ```
 
-3. Verify container health:
+### 3. Verify Container Health
 
 ```bash
-curl http://localhost:8000/healthz
+curl -i http://localhost:8000/healthz
 
 ```
 
@@ -133,11 +141,13 @@ infisical run -- pytest -v -m integration
 
 ---
 
-## Branching Strategy
+## Branching Strategy & Governance
 
 * **`main`**: Production release branch. Protected.
 * **`staging`**: Pre-production staging and integration testing branch. Protected.
 * **`development`**: Integration branch for active feature development. Protected.
+
+Root-level files (`Development Protection.json`, `Staging Protection.json`, `Main Protection.json`) track repository governance and branch protection rules as Policy-as-Code.
 
 ### Working Branch Naming Conventions
 
