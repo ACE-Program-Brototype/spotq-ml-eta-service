@@ -13,7 +13,7 @@ class RedisManager:
         self.client: aioredis.Redis | None = None
 
     async def connect(self) -> None:
-        """Initialize Redis connection pool."""
+        """Initialize Redis connection pool and propagate failure on error."""
         try:
             self.client = aioredis.Redis(
                 host=settings.REDIS_HOST,
@@ -26,7 +26,9 @@ class RedisManager:
             await self.client.ping()
             logger.info("Connected to Redis Cloud Feature Store")
         except Exception as exc:
-            logger.warning("Unable to connect to Redis Cloud Feature Store", error=str(exc))
+            logger.error("Unable to connect to Redis Cloud Feature Store", error=str(exc))
+            self.client = None
+            raise
 
     async def disconnect(self) -> None:
         """Close Redis connection pool gracefully."""
@@ -49,6 +51,7 @@ class RedisManager:
 
 
 redis_manager = RedisManager()
+
 
 def get_redis_manager() -> RedisManager:
     """FastAPI dependency provider for RedisManager."""

@@ -14,7 +14,7 @@ class MongoManager:
         self.db = None
 
     async def connect(self) -> None:
-        """Initialize MongoDB client."""
+        """Initialize MongoDB client and propagate failure on error."""
         try:
             self.client = AsyncIOMotorClient(
                 settings.MONGO_URI, serverSelectionTimeoutMS=2000
@@ -26,7 +26,10 @@ class MongoManager:
                 database=settings.MONGO_DB_NAME,
             )
         except Exception as exc:
-            logger.warning("Unable to connect to MongoDB Ingestion Buffer", error=str(exc))
+            logger.error("Unable to connect to MongoDB Ingestion Buffer", error=str(exc))
+            self.client = None
+            self.db = None
+            raise
 
     async def disconnect(self) -> None:
         """Close MongoDB connection gracefully."""
@@ -47,8 +50,14 @@ class MongoManager:
             logger.warning("MongoDB ping failed", error=str(exc))
             return False, 0.0
 
+    @classmethod
+    def get_database(cls):
+        """Return the active MongoDB database instance."""
+        return mongo_manager.db
+
 
 mongo_manager = MongoManager()
+
 
 def get_mongo_manager() -> MongoManager:
     """FastAPI dependency provider for MongoManager."""

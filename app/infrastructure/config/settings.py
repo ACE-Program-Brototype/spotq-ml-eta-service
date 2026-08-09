@@ -1,8 +1,8 @@
-"""Configuration settings for spotq-eta-service loaded dynamically via Infiscial."""
+"""Configuration settings for spotq-eta-service loaded dynamically via Infisical."""
 
 from enum import Enum
 from typing import Optional
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +16,7 @@ class EnvironmentType(str, Enum):
 
 
 class Settings(BaseSettings):
-    """Application settings mapped to Infiscial runtime environment variables."""
+    """Application settings mapped to Infisical runtime environment variables."""
 
     # Core Application Configuration
     ENVIRONMENT: EnvironmentType = Field(
@@ -52,6 +52,17 @@ class Settings(BaseSettings):
         default="app/infrastructure/ml_models/artifacts/eta_model_v1.json",
         description="Path to serialized XGBoost model artifact",
     )
+
+    @model_validator(mode="after")
+    def validate_production_model(self) -> "Settings":
+        """Ensure production environments do not use synthetic dummy defaults."""
+        if self.ENVIRONMENT == EnvironmentType.PRODUCTION:
+            if "eta_model_v1.json" in self.MODEL_PATH:
+                raise ValueError(
+                    "Production environment requires an explicitly provisioned model path "
+                    "instead of the synthetic development default."
+                )
+        return self
 
     model_config = SettingsConfigDict(
         case_sensitive=True,

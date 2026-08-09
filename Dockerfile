@@ -16,16 +16,17 @@ COPY app ./app
 RUN uv pip install --system --no-cache .
 
 # ==========================================
-# Stage 2: Hardened Runtime Container with Infiscial
+# Stage 2: Hardened Runtime Container with Infisical
 # ==========================================
 FROM python:3.11-slim AS runner
 
 WORKDIR /app
 
-# Install curl, bash, and Infiscial CLI for Debian/Ubuntu slim
+# Install curl, bash, ca-certificates (required for MongoDB Atlas SSL), and Infisical CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     bash \
+    ca-certificates \
     && curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash \
     && apt-get install -y infisical \
     && rm -rf /var/lib/apt/lists/*
@@ -37,7 +38,7 @@ RUN groupadd -r appgroup && useradd -r -g appgroup -u 1001 appuser
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy application source code and .infiscial.json configuration
+# Copy application source code and configuration
 COPY --chown=appuser:appgroup . .
 
 # Switch to non-root user

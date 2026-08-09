@@ -1,4 +1,3 @@
-```markdown
 # SpotQ ETA Microservice
 
 A production-ready, sub-50ms wait-time prediction microservice built with Python 3.11, FastAPI, and Clean Architecture principles. This service evaluates live restaurant queue volumes against an XGBoost model and manages historical feature baselines via Redis and MongoDB.
@@ -169,7 +168,3 @@ It performs the following validation steps:
 2. Runs the `ruff` linter and formatter checks.
 3. Executes the unit test suite (`pytest -v -m "not integration"`).
 4. Builds the container image via Docker Buildx with GitHub Actions cache integration.
-
-```
-
-```
