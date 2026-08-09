@@ -4,7 +4,6 @@ Main Protection.json
 Staging Protection.json
 
 # Exclude documentation, tests, and local config
-README.md
 scripts/
 tests/
 .github/
