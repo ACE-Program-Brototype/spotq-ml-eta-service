@@ -30,3 +30,7 @@ htmlcov/
 *.joblib
 *.pkl
 *.json.model
+
+Development Protection.json
+Main Protection.json
+Staging Protection.json

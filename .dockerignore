@@ -1,14 +1,13 @@
+# Exclude GitHub ruleset configurations from Docker image
+Development Protection.json
+Main Protection.json
+Staging Protection.json
+
+# Exclude documentation, tests, and local config
+scripts/
+tests/
+.github/
+.env
+.infisical.json
 .git
 .gitignore
-.venv
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache
-.coverage
-htmlcov
-.vscode
-.idea
-.DS_Store
-tests/
