@@ -341,7 +341,28 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
     )
     booster.save_model(str(candidate_path))
 
+    import subprocess
+
+    try:
+        code_version = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        code_version = None
+
     report = {
+        "model_metadata": {
+            "model_version": "eta_model_v1",
+            "artifact_format": "xgboost_json",
+            "feature_contract_version": "v1",
+            "training_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "code_version": code_version,
+            "dataset_mode": args.dataset_mode,
+            "is_synthetic": args.dataset_mode == "synthetic",
+        },
         "status": "candidate_trained",
         "dataset_mode": args.dataset_mode,
         "synthetic_data_warning": (
