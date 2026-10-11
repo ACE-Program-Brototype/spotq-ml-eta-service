@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV
 from xgboost import XGBRegressor
 
 from app.infrastructure.database.mongo_client import mongo_manager
 from app.infrastructure.ml_models.data_cleaning import clean_training_records
+from app.infrastructure.ml_models.diagnostics import build_model_diagnostics
 from app.infrastructure.ml_models.dataset import (
     chronological_train_test_split,
     make_purged_time_series_cv,
@@ -41,6 +43,64 @@ def compute_regression_metrics(
         "mae_minutes": float(mean_absolute_error(actual, predicted)),
         "rmse_minutes": float(math.sqrt(mean_squared_error(actual, predicted))),
         "r2": float(r2_score(actual, predicted)) if len(actual) >= 2 else None,
+    }
+
+
+
+def compare_with_baselines(
+    y_train: list[float],
+    y_test: list[float],
+    historical_average_predictions: list[float],
+    random_forest_predictions: list[float],
+    model_predictions: list[float],
+) -> dict[str, Any]:
+    """Compare baselines and both model families on the same holdout."""
+    if not y_train:
+        raise ValueError("Training targets must not be empty")
+    if not y_test:
+        raise ValueError("Holdout targets must not be empty")
+
+    prediction_arrays = (
+        historical_average_predictions,
+        random_forest_predictions,
+        model_predictions,
+    )
+    if any(len(values) != len(y_test) for values in prediction_arrays):
+        raise ValueError("All holdout prediction arrays must have equal length")
+
+    median_prediction = float(pd.Series(y_train, dtype=float).median())
+    metrics = {
+        "training_median": compute_regression_metrics(
+            y_test, [median_prediction] * len(y_test)
+        ),
+        "historical_average": compute_regression_metrics(
+            y_test, historical_average_predictions
+        ),
+        "random_forest": compute_regression_metrics(
+            y_test, random_forest_predictions
+        ),
+        "tuned_xgboost": compute_regression_metrics(y_test, model_predictions),
+    }
+
+    improvements = {}
+    for model_name in ("random_forest", "tuned_xgboost"):
+        improvements[model_name] = {}
+        model_mae = metrics[model_name]["mae_minutes"]
+        for baseline_name in ("training_median", "historical_average"):
+            baseline_mae = metrics[baseline_name]["mae_minutes"]
+            improvements[model_name][baseline_name] = (
+                None
+                if baseline_mae == 0
+                else float((baseline_mae - model_mae) / baseline_mae * 100.0)
+            )
+
+    return {
+        "metrics": metrics,
+        "mae_improvement_percent_over_baselines": improvements,
+        "interpretation": (
+            "Positive improvement means lower MAE than the baseline; "
+            "negative improvement means worse MAE."
+        ),
     }
 
 
@@ -156,6 +216,7 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
 
     x_test = all_features.iloc[test_indices].reset_index(drop=True)
     y_test = [targets[index] for index in test_indices]
+    test_records = [split.records[index] for index in test_indices]
 
     train_records = [split.records[index] for index in train_indices]
     cv = make_purged_time_series_cv(
@@ -205,9 +266,57 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
 
     search.fit(x_train, y_train)
 
+    rf_estimator = RandomForestRegressor(
+        random_state=args.seed,
+        n_jobs=1,
+    )
+    rf_search = RandomizedSearchCV(
+        estimator=rf_estimator,
+        param_distributions={
+            "n_estimators": [100, 200, 400, 600],
+            "max_depth": [None, 5, 10, 15, 20],
+            "min_samples_split": [2, 5, 10],
+            "min_samples_leaf": [1, 2, 4],
+            "max_features": [1.0, "sqrt", 0.8],
+        },
+        n_iter=args.n_iter,
+        scoring="neg_mean_absolute_error",
+        cv=cv_splits,
+        refit=True,
+        random_state=args.seed,
+        n_jobs=args.search_jobs,
+        return_train_score=True,
+        error_score="raise",
+        verbose=1,
+    )
+    rf_search.fit(x_train, y_train)
+
     validate_feature_columns(x_test)
     predictions = search.best_estimator_.predict(x_test)
+    rf_predictions = rf_search.best_estimator_.predict(x_test)
     metrics = compute_regression_metrics(y_test, predictions.tolist())
+
+    baseline_comparison = compare_with_baselines(
+        y_train=y_train,
+        y_test=y_test,
+        historical_average_predictions=(
+            x_test["historical_average_wait"].astype(float).tolist()
+        ),
+        random_forest_predictions=rf_predictions.astype(float).tolist(),
+        model_predictions=predictions.astype(float).tolist(),
+    )
+
+    diagnostics = build_model_diagnostics(
+        records=test_records,
+        features=x_test,
+        actual=y_test,
+        predictions={
+            "random_forest": rf_predictions.astype(float).tolist(),
+            "tuned_xgboost": predictions.astype(float).tolist(),
+        },
+        xgboost_model=search.best_estimator_,
+        random_forest_model=rf_search.best_estimator_,
+    )
 
     candidate_path = args.output_dir / "eta_model_candidate.json"
     report_path = args.output_dir / "eta_training_report.json"
@@ -263,6 +372,13 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
             "best_parameters": _json_safe_params(search.best_params_),
         },
         "test_metrics": metrics,
+        "random_forest_cv": {
+            "selection_metric": "MAE",
+            "best_cv_mae_minutes": float(-rf_search.best_score_),
+            "best_parameters": _json_safe_params(rf_search.best_params_),
+        },
+        "baseline_comparison": baseline_comparison,
+        "diagnostics": diagnostics,
         "artifacts": {
             "candidate_model": str(candidate_path),
             "report": str(report_path),
