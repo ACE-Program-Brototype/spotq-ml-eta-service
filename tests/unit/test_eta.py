@@ -27,7 +27,7 @@ def test_eta_predict_endpoint():
 def test_eta_predict_validation_errors():
     """Verify GET /eta/predict rejects requests with missing or invalid parameters."""
     response = client.get("/eta/predict", params={"restaurant_id": "test"})
-    assert response.status_code == 422
+    assert response.status_code == 400
 
 
 def test_eta_ingest_endpoint():

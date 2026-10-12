@@ -3,7 +3,9 @@
 from contextlib import asynccontextmanager
 from typing import Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.infrastructure.cache.redis_client import redis_manager
@@ -17,7 +19,10 @@ from app.infrastructure.observability.metrics import (
     REDIS_HEALTH_GAUGE,
 )
 from app.presentation.health.router import router as health_router
-from app.presentation.predict.router import router as predict_router
+from app.presentation.predict.router import (
+    api_v1_router as eta_v1_router,
+    router as predict_router,
+)
 
 setup_logging()
 
@@ -59,6 +64,29 @@ async def lifespan(app: FastAPI):
     await mongo_manager.disconnect()
 
 
+
+
+async def validation_error_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    """Return structured HTTP 400 responses for invalid request parameters."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "invalid_request",
+            "message": "Request parameters or body are invalid",
+            "details": [
+                {
+                    "location": list(error.get("loc", ())),
+                    "message": error.get("msg", "Invalid value"),
+                }
+                for error in exc.errors()
+            ],
+        },
+    )
+
+
 app = FastAPI(
     title="SpotQ ETA Microservice",
     description="Sub-50ms Wait-Time Prediction Engine",
@@ -67,9 +95,11 @@ app = FastAPI(
 )
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 app.include_router(health_router)
 app.include_router(predict_router)
+app.include_router(eta_v1_router)
 
 
 @app.get("/")
