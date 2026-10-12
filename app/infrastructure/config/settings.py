@@ -53,6 +53,22 @@ class Settings(BaseSettings):
         description="Path to serialized XGBoost model artifact",
     )
 
+
+    DEFAULT_RESTAURANT_TIMEZONE: str = Field(
+        default="UTC",
+        description="Default timezone for restaurants without a configured timezone",
+    )
+    COLD_START_AVERAGE_WAIT_MINUTES: float = Field(
+        default=20.0, ge=0, le=120,
+        description="Fallback historical average wait in minutes",
+    )
+    REDIS_LOOKUP_TIMEOUT_SECONDS: float = Field(
+        default=0.015, gt=0, le=1,
+        description="Total Redis history lookup timeout in seconds",
+    )
+    ETA_MIN_WAIT_MINUTES: float = Field(default=1.0, gt=0, le=120)
+    ETA_MAX_WAIT_MINUTES: float = Field(default=120.0, gt=0, le=120)
+
     @model_validator(mode="after")
     def validate_production_model(self) -> "Settings":
         """Ensure production environments do not use synthetic dummy defaults."""
