@@ -145,17 +145,3 @@ def test_wait_above_120_minutes_is_rejected_by_training_policy():
 
     assert accepted == []
     assert report["rejection_reasons"]["wait_time_above_limit"] == 1
-
-
-
-def test_wait_above_120_minutes_is_rejected_by_training_policy():
-    record = valid_record(
-        joined_at="2026-09-22T12:00:00Z",
-        completed_at="2026-09-22T14:01:00Z",
-        actual_wait_time_minutes=121.0,
-    )
-
-    accepted, report = clean_training_records([record])
-
-    assert accepted == []
-    assert report["rejection_reasons"]["wait_time_above_limit"] == 1
