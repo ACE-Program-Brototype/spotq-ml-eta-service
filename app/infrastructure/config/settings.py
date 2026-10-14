@@ -52,6 +52,10 @@ class Settings(BaseSettings):
         default="app/infrastructure/ml_models/artifacts/eta_model_v1.json",
         description="Path to serialized XGBoost model artifact",
     )
+    ALLOW_SYNTHETIC_MODEL: bool = Field(
+        default=False,
+        description="Allow a synthetic-data model for development only",
+    )
 
 
     DEFAULT_RESTAURANT_TIMEZONE: str = Field(
@@ -71,13 +75,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_model(self) -> "Settings":
-        """Ensure production environments do not use synthetic dummy defaults."""
-        if self.ENVIRONMENT == EnvironmentType.PRODUCTION:
-            if "eta_model_v1.json" in self.MODEL_PATH:
-                raise ValueError(
-                    "Production environment requires an explicitly provisioned model path "
-                    "instead of the synthetic development default."
-                )
+        """Prevent synthetic-model support from being enabled in production."""
+        if (
+            self.ENVIRONMENT == EnvironmentType.PRODUCTION
+            and self.ALLOW_SYNTHETIC_MODEL
+        ):
+            raise ValueError("ALLOW_SYNTHETIC_MODEL must be false in production.")
         return self
 
     model_config = SettingsConfigDict(

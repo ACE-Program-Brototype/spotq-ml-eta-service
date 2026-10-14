@@ -141,6 +141,7 @@ async def run(collection_name, timezone_path, report_path):
 
         records = await mongo_manager.db[collection_name].find(
             {
+                "is_synthetic": False,
                 "joined_at": {"$exists": True},
                 "completed_at": {"$exists": True},
                 "actual_wait_time_minutes": {"$gt": 0, "$lte": 120},
