@@ -20,8 +20,9 @@ def test_eta_predict_endpoint():
         data = response.json()
         assert data["restaurant_id"] == "c3b9a782-9011-4712-8f1d-2395a123bc45"
         assert isinstance(data["estimated_wait_minutes"], float)
-        assert isinstance(data["confidence_score"], float)
+        assert data["confidence_score"] is None
         assert "timestamp" in data
+        assert isinstance(data["fallback_used"], bool)
 
 
 def test_eta_predict_validation_errors():
