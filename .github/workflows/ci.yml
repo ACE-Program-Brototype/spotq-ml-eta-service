@@ -36,7 +36,7 @@ jobs:
 
       - name: Run Ruff Linter
         run: |
-          ruff check app/ tests/
+          ruff check app/ scripts/ tests/
 
       - name: Run Pytest Suite
         run: |
