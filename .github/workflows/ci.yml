@@ -38,6 +38,7 @@ jobs:
         run: |
           ruff check app/ scripts/ tests/
 
+
       - name: Run Pytest Suite
         run: |
           pytest -v -m "not integration"
