@@ -26,13 +26,26 @@ from app.infrastructure.ml_models.features import (
     FEATURE_NAMES,
     build_training_features,
 )
-
+from app.infrastructure.logging.logger import logger
 
 def compute_regression_metrics(
     actual: list[float],
     predicted: list[float],
 ) -> dict[str, float | None]:
-    """Compute common regression metrics."""
+    """Calculate regression metrics for actual and predicted wait times.
+
+    Args:
+        actual: Observed wait times in minutes.
+        predicted: Model-predicted wait times in minutes.
+
+    Returns:
+        MAE and RMSE in minutes, and R-squared when at least two
+        observations are available.
+
+    Raises:
+        ValueError: If the arrays have different lengths, are empty,
+            or contain non-finite values.
+    """
     if not actual or len(actual) != len(predicted):
         raise ValueError("Actual and predicted values must have equal nonzero length")
 
@@ -105,7 +118,15 @@ def compare_with_baselines(
 
 
 def validate_feature_columns(frame: pd.DataFrame) -> None:
-    """Reject missing, extra, or reordered model features."""
+    """Validate the ordered feature matrix against the model contract.
+
+    Args:
+        frame: DataFrame containing model input features.
+
+    Raises:
+        ValueError: If the feature names or order are incorrect, the
+            matrix is empty, values are missing, or columns are non-numeric.
+    """
     if tuple(frame.columns) != FEATURE_NAMES:
         raise ValueError(
             f"Feature schema mismatch. Expected {FEATURE_NAMES}; "
@@ -129,7 +150,19 @@ async def load_mongo_records(
     collection_name: str,
     dataset_mode: str,
 ) -> list[dict[str, Any]]:
-    """Load either synthetic or real records without mixing the two."""
+    """Load training records from MongoDB for one dataset mode.
+
+    Args:
+        collection_name: MongoDB collection to query.
+        dataset_mode: Either ``synthetic`` or ``real``.
+
+    Returns:
+        Raw records matching the selected dataset mode.
+
+    Raises:
+        RuntimeError: If MongoDB connects without providing a database.
+        Exception: Propagates database failures after connection cleanup.
+    """
     if dataset_mode == "synthetic":
         query = {"is_synthetic": True}
     else:
@@ -179,13 +212,46 @@ def _json_safe_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def run_training(args: argparse.Namespace) -> dict[str, Any]:
+    """Train and evaluate candidate ETA models using chronological data.
+
+    Args:
+        args: Parsed training configuration, including dataset mode,
+            timezone mapping, cross-validation settings, and output directory.
+
+    Returns:
+        Training report containing metrics, diagnostics, and artifact paths.
+
+    Raises:
+        ValueError: If the dataset is insufficient or configuration is invalid.
+        RuntimeError: If candidate model validation fails.
+    """
+    logger.info(
+        "Starting ETA model training",
+        dataset_mode=args.dataset_mode,
+        collection=args.collection,
+        feature_count=len(FEATURE_NAMES),
+    )
     timezone_map = load_timezone_map(args.timezone_map)
     raw_records = await load_mongo_records(
         args.collection,
         args.dataset_mode,
     )
 
+    logger.info(
+        "Loaded ETA training records",
+        record_count=len(raw_records),
+        dataset_mode=args.dataset_mode,
+    )
+
     cleaned, cleaning_report = clean_training_records(raw_records)
+
+    logger.info(
+        "Completed ETA training data cleaning",
+        input_records=len(raw_records),
+        valid_records=len(cleaned),
+        cleaning_report=cleaning_report,
+    )
+
     if len(cleaned) < 30:
         raise ValueError(
             f"Only {len(cleaned)} valid records; at least 30 are required "
@@ -195,6 +261,14 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
     split = chronological_train_test_split(
         cleaned,
         test_fraction=args.test_fraction,
+    )
+
+    logger.info(
+        "Completed chronological ETA data split",
+        train_records=len(split.train_indices),
+        test_records=len(split.test_indices),
+        embargo_records=len(split.embargo_indices),
+        cutoff_utc=split.cutoff.isoformat(),
     )
 
     # Features are built in chronological order. A completed wait can affect
@@ -264,7 +338,19 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
         verbose=1,
     )
 
+    logger.info(
+        "Starting XGBoost hyperparameter search",
+        training_records=len(x_train),
+        cv_folds=len(cv_splits),
+        search_iterations=args.n_iter,
+    )
+
     search.fit(x_train, y_train)
+
+    logger.info(
+        "Completed XGBoost hyperparameter search",
+        best_cv_mae_minutes=float(-search.best_score_),
+    )
 
     rf_estimator = RandomForestRegressor(
         random_state=args.seed,
@@ -289,7 +375,21 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
         error_score="raise",
         verbose=1,
     )
+
+    logger.info(
+        "Starting Random Forest hyperparameter search",
+        training_records=len(x_train),
+        cv_folds=len(cv_splits),
+        search_iterations=args.n_iter,
+    )
+
     rf_search.fit(x_train, y_train)
+
+    logger.info(
+        "Completed Random Forest hyperparameter search",
+        best_cv_mae_minutes=float(-search.best_score_),
+    )
+
 
     validate_feature_columns(x_test)
     predictions = search.best_estimator_.predict(x_test)
@@ -407,6 +507,15 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     save_json(report_path, report)
+
+    logger.info(
+        "ETA model training completed",
+        candidate_model=str(candidate_path),
+        report_path=str(report_path),
+        test_mae_minutes=metrics["mae_minutes"],
+        dataset_mode=args.dataset_mode,
+    )
+
     print(json.dumps(report, indent=2, allow_nan=False))
     return report
 
@@ -447,4 +556,8 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_training(parse_args()))
+    try:
+        asyncio.run(run_training(parse_args()))
+    except Exception:
+        logger.exception("ETA model training failed")
+        raise SystemExit(1)

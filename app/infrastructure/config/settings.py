@@ -4,7 +4,11 @@ from enum import Enum
 from typing import Optional
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
+DEFAULT_MODEL_PATH = (
+    "app/infrastructure/ml_models/artifacts/eta_model_v1.json"
+)
 
 class EnvironmentType(str, Enum):
     """Application environment modes."""
@@ -75,12 +79,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_model(self) -> "Settings":
-        """Prevent synthetic-model support from being enabled in production."""
-        if (
-            self.ENVIRONMENT == EnvironmentType.PRODUCTION
-            and self.ALLOW_SYNTHETIC_MODEL
-        ):
-            raise ValueError("ALLOW_SYNTHETIC_MODEL must be false in production.")
+        """Enforce production model configuration safeguards."""
+        if self.ENVIRONMENT == EnvironmentType.PRODUCTION:
+            if self.ALLOW_SYNTHETIC_MODEL:
+                raise ValueError(
+                    "ALLOW_SYNTHETIC_MODEL must be false in production."
+                )
+
+            configured_path = Path(self.MODEL_PATH).resolve()
+            default_path = Path(DEFAULT_MODEL_PATH).resolve()
+
+            if configured_path == default_path:
+                raise ValueError(
+                    "Production must use a validated model artifact, "
+                    "not the default eta_model_v1.json."
+                )
+
         return self
 
     model_config = SettingsConfigDict(

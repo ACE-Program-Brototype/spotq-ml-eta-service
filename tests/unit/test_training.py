@@ -46,6 +46,42 @@ def test_feature_matrix_rejects_missing_values():
     with pytest.raises(ValueError, match="missing values"):
         validate_feature_columns(frame)
 
+def test_feature_matrix_rejects_missing_column():
+    frame = pd.DataFrame(
+        [[2, 5, 12, 0, 0]],
+        columns=FEATURE_NAMES[:-1],
+    )
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        validate_feature_columns(frame)
+
+
+def test_feature_matrix_rejects_extra_column():
+    frame = pd.DataFrame(
+        [[2, 5, 12, 0, 0, 15.0, 1]],
+        columns=[*FEATURE_NAMES, "unexpected_feature"],
+    )
+
+    with pytest.raises(ValueError, match="schema mismatch"):
+        validate_feature_columns(frame)
+
+
+def test_feature_matrix_rejects_empty_frame():
+    frame = pd.DataFrame(columns=FEATURE_NAMES)
+
+    with pytest.raises(ValueError, match="empty"):
+        validate_feature_columns(frame)
+
+
+def test_feature_matrix_rejects_non_numeric_column():
+    frame = pd.DataFrame(
+        [[2, 5, 12, 0, 0, "unknown"]],
+        columns=FEATURE_NAMES,
+    )
+
+    with pytest.raises(ValueError, match="numeric"):
+        validate_feature_columns(frame)
+
 
 def test_metrics_reject_mismatched_lengths():
     with pytest.raises(ValueError):

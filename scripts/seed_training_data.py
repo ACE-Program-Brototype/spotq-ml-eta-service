@@ -31,7 +31,17 @@ RESTAURANT_PROFILES = (
 
 
 def _parse_datetime(value: str) -> datetime:
-    """Parse an ISO timestamp and require an explicit timezone."""
+    """Parse an ISO timestamp and normalize it to UTC.
+
+    Args:
+        value: ISO-formatted timestamp string.
+
+    Returns:
+        A timezone-aware datetime in UTC.
+
+    Raises:
+        ValueError: If the timestamp is invalid or has no timezone.
+    """
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("end_at must include a timezone, e.g. 2026-10-01T00:00:00Z")
@@ -68,7 +78,21 @@ def generate_synthetic_records(
     days: int = 90,
     end_at: datetime = DEFAULT_END_AT,
 ) -> list[dict[str, Any]]:
-    """Generate deterministic queue events for pipeline development and testing."""
+    """Generate reproducible synthetic queue events for pipeline testing.
+
+    Args:
+        count: Number of queue records to generate.
+        seed: Random seed for deterministic generation.
+        restaurant_count: Number of mock restaurants to distribute records across.
+        days: Number of days in the generation window.
+        end_at: Timezone-aware end timestamp for the dataset.
+
+    Returns:
+        Synthetic queue records with stable IDs and ISO-formatted timestamps.
+
+    Raises:
+        ValueError: If generation parameters are invalid or end_at is naive.
+    """
     if count < 1:
         raise ValueError("count must be at least 1")
     if restaurant_count < 1:
@@ -182,13 +206,35 @@ async def seed_mongodb(
     collection_name: str = DEFAULT_COLLECTION,
     batch_size: int = 500,
 ) -> None:
-    """Idempotently upsert generated records into MongoDB in batches."""
+    """Idempotently seed synthetic ETA records into MongoDB.
+
+    Records are inserted only when their queue_entry_id does not already
+    exist. Existing records are preserved to keep repeated runs safe.
+
+    Args:
+        records: Synthetic queue records to persist.
+        collection_name: MongoDB collection to write to.
+        batch_size: Maximum number of operations per bulk write.
+
+    Raises:
+        ValueError: If records or configuration values are invalid.
+        RuntimeError: If MongoDB connects without a usable database.
+        Exception: Propagates database failures after connection cleanup.
+    """
     if not records:
         raise ValueError("Cannot seed an empty dataset")
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     if not collection_name.strip():
         raise ValueError("collection_name cannot be empty")
+
+    logger.info(
+        "Starting synthetic ETA dataset seeding",
+        collection=collection_name,
+        requested_records=len(records),
+        batch_size=batch_size,
+        batch_count=(len(records) + batch_size - 1) // batch_size,
+    )
 
     await mongo_manager.connect()
 
@@ -199,6 +245,12 @@ async def seed_mongodb(
 
         collection = database[collection_name]
         await collection.create_index("queue_entry_id", unique=True)
+
+        logger.info(
+            "MongoDB collection prepared for synthetic ETA records",
+            collection=collection_name,
+            unique_index="queue_entry_id",
+        )
 
         inserted_or_matched = 0
         upserted = 0
@@ -275,4 +327,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        logger.exception("Synthetic ETA dataset seeding failed")
+        raise SystemExit(1)
