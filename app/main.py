@@ -19,10 +19,7 @@ from app.infrastructure.observability.metrics import (
     REDIS_HEALTH_GAUGE,
 )
 from app.presentation.health.router import router as health_router
-from app.presentation.predict.router import (
-    api_v1_router as eta_v1_router,
-    router as predict_router,
-)
+from app.presentation.predict.router import api_v1_router as eta_v1_router
 
 setup_logging()
 
@@ -98,7 +95,6 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 app.include_router(health_router)
-app.include_router(predict_router)
 app.include_router(eta_v1_router)
 
 

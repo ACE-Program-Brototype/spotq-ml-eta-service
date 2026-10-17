@@ -26,9 +26,7 @@ from app.infrastructure.observability.metrics import (
     ETA_REQUEST_LATENCY,
 )
 
-router = APIRouter(prefix="/eta", tags=["ETA Predictions"])
-api_v1_router = APIRouter(prefix="/api/v1/eta", tags=["ETA Predictions"])
-
+api_v1_router = APIRouter(prefix="/api/v1/eta", tags=["ETA"])
 
 class ETAPredictResponse(BaseModel):
     """Response contract for a real-time ETA prediction."""
@@ -275,15 +273,12 @@ async def predict_eta(
         ETA_REQUEST_LATENCY.observe(perf_counter() - request_started)
 
 
-router.add_api_route(
-    "/predict", predict_eta, methods=["GET"], response_model=ETAPredictResponse
-)
 api_v1_router.add_api_route(
     "/predict", predict_eta, methods=["GET"], response_model=ETAPredictResponse
 )
 
 
-@router.post(
+@api_v1_router.post(
     "/ingest",
     response_model=ETAIngestResponse,
     status_code=status.HTTP_200_OK,
