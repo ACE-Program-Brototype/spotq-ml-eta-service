@@ -5,9 +5,9 @@ client = TestClient(app)
 
 
 def test_eta_predict_endpoint():
-    """Verify GET /eta/predict handles valid requests and model availability correctly."""
+    """Verify GET /api/v1/eta/predict handles valid requests and model availability correctly."""
     response = client.get(
-        "/eta/predict",
+        "/api/v1/eta/predict",
         params={
             "restaurant_id": "c3b9a782-9011-4712-8f1d-2395a123bc45",
             "total_people_ahead": 10,
@@ -20,18 +20,19 @@ def test_eta_predict_endpoint():
         data = response.json()
         assert data["restaurant_id"] == "c3b9a782-9011-4712-8f1d-2395a123bc45"
         assert isinstance(data["estimated_wait_minutes"], float)
-        assert isinstance(data["confidence_score"], float)
+        assert data["confidence_score"] is None
         assert "timestamp" in data
+        assert isinstance(data["fallback_used"], bool)
 
 
 def test_eta_predict_validation_errors():
-    """Verify GET /eta/predict rejects requests with missing or invalid parameters."""
-    response = client.get("/eta/predict", params={"restaurant_id": "test"})
-    assert response.status_code == 422
+    """Verify GET /api/v1/eta/predict rejects requests with missing or invalid parameters."""
+    response = client.get("/api/v1/eta/predict", params={"restaurant_id": "test"})
+    assert response.status_code == 400
 
 
 def test_eta_ingest_endpoint():
-    """Verify POST /eta/ingest validates payload contract and response status."""
+    """Verify POST /api/v1/eta/ingest validates payload contract and response status."""
     payload = {
         "queue_entry_id": "entry-uuid-123",
         "restaurant_id": "c3b9a782-9011-4712-8f1d-2395a123bc45",
@@ -41,7 +42,7 @@ def test_eta_ingest_endpoint():
         "actual_wait_time_minutes": 25.0,
         "total_people_ahead_at_join": 10,
     }
-    response = client.post("/eta/ingest", json=payload)
+    response = client.post("/api/v1/eta/ingest", json=payload)
     # Expects 200 if MongoDB is connected during unit tests, or 503 if unavailable
     assert response.status_code in [200, 503, 500]
     if response.status_code == 200:

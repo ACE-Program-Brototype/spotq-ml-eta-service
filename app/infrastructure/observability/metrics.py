@@ -1,6 +1,6 @@
 """Custom Prometheus metrics and health gauges."""
 
-from prometheus_client import Gauge, Histogram, REGISTRY
+from prometheus_client import Counter, Gauge, Histogram, REGISTRY
 
 
 def _get_or_create_gauge(name: str, documentation: str) -> Gauge:
@@ -40,4 +40,33 @@ MONGO_HEALTH_GAUGE = _get_or_create_gauge(
 MODEL_LOADED_GAUGE = _get_or_create_gauge(
     "spotq_xgboost_model_loaded_status",
     "1 if XGBoost model artifact is loaded, 0 otherwise",
+)
+
+
+def _get_or_create_counter(name: str, documentation: str) -> Counter:
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Counter(name, documentation)
+
+
+ETA_REQUEST_LATENCY = _get_or_create_histogram(
+    "spotq_eta_request_latency_seconds",
+    "End-to-end latency of ETA prediction requests in seconds",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
+ETA_INFERENCE_LATENCY = _get_or_create_histogram(
+    "spotq_eta_model_inference_latency_seconds",
+    "XGBoost model inference latency in seconds",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5),
+)
+
+ETA_FALLBACK_TOTAL = _get_or_create_counter(
+    "spotq_eta_fallback_total",
+    "ETA predictions that used fallback history rather than exact history",
+)
+
+ETA_CLAMPED_TOTAL = _get_or_create_counter(
+    "spotq_eta_clamped_total",
+    "ETA predictions clamped to configured minimum or maximum bounds",
 )

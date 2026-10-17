@@ -37,6 +37,15 @@ def test_feature_matrix_rejects_wrong_order():
         validate_feature_columns(frame)
 
 
+def test_feature_matrix_rejects_missing_values():
+    frame = pd.DataFrame(
+        [[2, 5, 12, 0, 0, float("nan")]],
+        columns=FEATURE_NAMES,
+    )
+
+    with pytest.raises(ValueError, match="missing values"):
+        validate_feature_columns(frame)
+
 def test_feature_matrix_rejects_missing_column():
     frame = pd.DataFrame(
         [[2, 5, 12, 0, 0]],
@@ -49,7 +58,7 @@ def test_feature_matrix_rejects_missing_column():
 
 def test_feature_matrix_rejects_extra_column():
     frame = pd.DataFrame(
-        [[2, 5, 12, 0, 0, 15.0, 99]],
+        [[2, 5, 12, 0, 0, 15.0, 1]],
         columns=[*FEATURE_NAMES, "unexpected_feature"],
     )
 
@@ -66,21 +75,11 @@ def test_feature_matrix_rejects_empty_frame():
 
 def test_feature_matrix_rejects_non_numeric_column():
     frame = pd.DataFrame(
-        [["two", 5, 12, 0, 0, 15.0]],
+        [[2, 5, 12, 0, 0, "unknown"]],
         columns=FEATURE_NAMES,
     )
 
     with pytest.raises(ValueError, match="numeric"):
-        validate_feature_columns(frame)
-
-
-def test_feature_matrix_rejects_missing_values():
-    frame = pd.DataFrame(
-        [[2, 5, 12, 0, 0, float("nan")]],
-        columns=FEATURE_NAMES,
-    )
-
-    with pytest.raises(ValueError, match="missing values"):
         validate_feature_columns(frame)
 
 
