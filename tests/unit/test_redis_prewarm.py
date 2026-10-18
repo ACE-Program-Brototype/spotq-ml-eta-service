@@ -189,6 +189,20 @@ async def test_run_writes_exact_and_fallback_redis_keys(tmp_path, monkeypatch):
 
     class FakeCollection:
         def find(self, query):
+            assert query["is_synthetic"] is False
+            filtered_records = [
+                record
+                for record in records
+                if record.get("is_synthetic") is False
+                and "joined_at" in record
+                and "completed_at" in record
+                and 0 < record.get("actual_wait_time_minutes", 0) <= 120
+            ]
+
+            class FakeCursor:
+                async def to_list(self, length=None):
+                    return filtered_records
+
             return FakeCursor()
 
     class FakeDB:
@@ -244,15 +258,18 @@ async def test_run_writes_exact_and_fallback_redis_keys(tmp_path, monkeypatch):
     restaurant_key = "eta:history:mock-restaurant-001:all"
     global_key = "eta:history:global"
 
-    assert float(fake_redis.values[exact_key]) == 20.0
-    assert float(fake_redis.values[weekday_key]) == pytest.approx(20.0)
-    assert float(fake_redis.values[restaurant_key]) == pytest.approx(20.0)
-    assert float(fake_redis.values[global_key]) == pytest.approx(30.0)
+    # Only the real event for restaurant 002 contributes to the aggregates.
+    assert exact_key not in fake_redis.values
+    assert weekday_key not in fake_redis.values
+    assert restaurant_key not in fake_redis.values
 
-    assert fake_redis.values[f"{exact_key}:source"] == "synthetic"
-    assert fake_redis.values[f"{exact_key}:sample_count"] == "2"
+    assert float(fake_redis.values[global_key]) == pytest.approx(50.0)
+    assert fake_redis.values[f"{global_key}:source"] == "live"
+    assert fake_redis.values[f"{global_key}:sample_count"] == "1"
+
     assert report["status"] == "completed"
     assert report["buckets_written"] > 0
+    assert report["synthetic_only_buckets"] == 0
     assert report_path.exists()
 
 

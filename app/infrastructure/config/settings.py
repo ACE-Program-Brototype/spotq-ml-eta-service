@@ -4,7 +4,11 @@ from enum import Enum
 from typing import Optional
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
+DEFAULT_MODEL_PATH = (
+    "app/infrastructure/ml_models/artifacts/eta_model_v1.json"
+)
 
 class EnvironmentType(str, Enum):
     """Application environment modes."""
@@ -52,16 +56,45 @@ class Settings(BaseSettings):
         default="app/infrastructure/ml_models/artifacts/eta_model_v1.json",
         description="Path to serialized XGBoost model artifact",
     )
+    ALLOW_SYNTHETIC_MODEL: bool = Field(
+        default=False,
+        description="Allow a synthetic-data model for development only",
+    )
+
+
+    DEFAULT_RESTAURANT_TIMEZONE: str = Field(
+        default="UTC",
+        description="Default timezone for restaurants without a configured timezone",
+    )
+    COLD_START_AVERAGE_WAIT_MINUTES: float = Field(
+        default=20.0, ge=0, le=120,
+        description="Fallback historical average wait in minutes",
+    )
+    REDIS_LOOKUP_TIMEOUT_SECONDS: float = Field(
+        default=0.015, gt=0, le=1,
+        description="Total Redis history lookup timeout in seconds",
+    )
+    ETA_MIN_WAIT_MINUTES: float = Field(default=1.0, gt=0, le=120)
+    ETA_MAX_WAIT_MINUTES: float = Field(default=120.0, gt=0, le=120)
 
     @model_validator(mode="after")
     def validate_production_model(self) -> "Settings":
-        """Ensure production environments do not use synthetic dummy defaults."""
+        """Enforce production model configuration safeguards."""
         if self.ENVIRONMENT == EnvironmentType.PRODUCTION:
-            if "eta_model_v1.json" in self.MODEL_PATH:
+            if self.ALLOW_SYNTHETIC_MODEL:
                 raise ValueError(
-                    "Production environment requires an explicitly provisioned model path "
-                    "instead of the synthetic development default."
+                    "ALLOW_SYNTHETIC_MODEL must be false in production."
                 )
+
+            configured_path = Path(self.MODEL_PATH).resolve()
+            default_path = Path(DEFAULT_MODEL_PATH).resolve()
+
+            if configured_path == default_path:
+                raise ValueError(
+                    "Production must use a validated model artifact, "
+                    "not the default eta_model_v1.json."
+                )
+
         return self
 
     model_config = SettingsConfigDict(

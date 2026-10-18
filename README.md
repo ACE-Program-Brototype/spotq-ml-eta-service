@@ -198,7 +198,7 @@ infisical login
 To run a command with injected secrets, use the project and environment configuration appropriate for your setup:
 
 ```bash
-infisical run -- uvicorn app.main:app --reload --port 8000
+infisical run --projectId f10d866c-bf75-43e5-b6fb-5059509981b3 --env=dev -- uv run uvicorn app.main:app --reload --port 8000
 ```
 
 For local execution without Infisical, configure the required environment variables using the names defined in `app/infrastructure/config/settings.py`.
@@ -439,12 +439,12 @@ uv run uvicorn app.main:app --reload --port 8000
 With Infisical:
 
 ```bash
-infisical run -- uvicorn app.main:app --reload --port 8000
+infisical run --projectId f10d866c-bf75-43e5-b6fb-5059509981b3 --env=dev -- uv run uvicorn app.main:app --reload --port 8000
 ```
 
-The repository contains health and prediction routing modules. Verify the routes registered by the current application before relying on any particular endpoint path.
+The verified development endpoints are `GET /healthz`, `GET /api/v1/eta/predict`, and the Swagger UI at `/docs`. The OpenAPI schema is available at `/openapi.json`. These are local development URLs when the service runs on `127.0.0.1:8000`.
 
-The presence of a trained candidate does not, by itself, establish that the candidate is loaded by the live serving path. Model promotion and serving compatibility are separate steps.
+Development serving verification: the six-feature synthetic candidate loaded successfully, and the prediction endpoint returned HTTP 200. The existing seven-feature `eta_model_v1.json` artifact is incompatible with the canonical six-feature serving contract and remains uncommitted. The successful development test does not establish real-world model accuracy.
 
 ---
 
@@ -456,7 +456,7 @@ The presence of a trained candidate does not, by itself, establish that the cand
 uv run pytest tests/unit -q
 ```
 
-The latest verified unit-test run completed with **71 passed** and one non-blocking Starlette deprecation warning.
+The latest verified unit-test run completed with **84 passed** and one non-blocking Starlette deprecation warning.
 
 ### Run the full test suite
 
@@ -510,7 +510,7 @@ docker run --rm -p 8000:8000 spotq-eta-service:latest
 
 If the container is configured to launch through Infisical, provide the appropriate authorized runtime configuration. Do not place real service tokens directly in the README or commit them to source control.
 
-Verify the health endpoint against the route actually registered by the application.
+Development verification confirmed `GET /healthz`, `GET /api/v1/eta/predict`, and `/openapi.json` returned HTTP 200. The Docker API container previously failed to start because its Infisical runtime configuration did not provide the required project configuration/authentication. Container startup remains unresolved; do not consider Docker deployment verified.
 
 ---
 
@@ -546,12 +546,14 @@ The documented CI workflow is `.github/workflows/ci.yml`. When present and confi
 
 The SCRUM-1602 implementation establishes the data-to-model workflow, but the following items must be verified before treating the candidate as a production-ready model:
 
-1. **Serving compatibility:** Confirm that the candidate's six features match the intended inference loader and feature contract. The existing serving artifact has a different feature schema.
+1. **Artifact compatibility:** The six-feature development candidate loaded successfully against the canonical serving contract. The separate seven-feature serving artifact remains incompatible and must not be promoted without deliberate schema reconciliation.
 2. **Artifact promotion:** Promote a candidate only after validation succeeds. A failed candidate must not overwrite an existing valid serving artifact.
 3. **Training provenance:** Regenerate the candidate and report together when the report must identify the current implementation commit as the exact training code version.
 4. **Real-data evaluation:** Evaluate on representative, trustworthy restaurant outcomes before making real-world accuracy claims.
 5. **Integration verification:** Verify the configured MongoDB collection, Redis keys, fallback behavior, and intended service loading path in the target environment.
-6. **Performance verification:** Benchmark the complete prediction path before claiming a sub-50 ms latency target has been met.
+6. **Performance verification:** Twenty sequential loopback requests were below 50 ms, but a representative concurrent load test is still required before claiming the latency target is met.
+7. **Fallback investigation:** The live prediction returned `fallback_used: true`; investigate the historical-feature lookup and confirm the intended Redis instance and fallback behavior.
+8. **Container startup:** Resolve Infisical configuration for the Docker API container and repeat health and prediction checks inside the container.
 
 ### SCRUM-1602 verification summary
 
@@ -559,9 +561,12 @@ The SCRUM-1602 implementation establishes the data-to-model workflow, but the fo
 - Redis connectivity: verified.
 - Synthetic pre-warm: completed, 649 buckets written.
 - Candidate XGBoost model loading: verified.
-- Unit tests: 71 passed.
+- Unit tests: 84 passed.
 - Real-world ETA accuracy: not established.
-- Candidate promotion and serving compatibility: pending verification.
+- Six-feature candidate loading in development: verified.
+- Seven-feature artifact compatibility: unresolved; artifact remains uncommitted.
+- Docker API startup: unresolved.
+- Live prediction historical-feature fallback: observed; root cause not yet confirmed.
 
 ---
 
