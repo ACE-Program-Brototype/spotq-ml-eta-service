@@ -1,10 +1,10 @@
 # SpotQ ETA Microservice
 
-A Python 3.11, FastAPI-based microservice foundation for restaurant queue waiting-time prediction. SpotQ ETA uses XGBoost model artifacts, MongoDB for queue data, and Redis for historical waiting-time features.
+A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time prediction. SpotQ ETA uses XGBoost model artifacts, MongoDB for queue data, and Redis for historical waiting-time features and asynchronous event processing.
 
-The service follows Clean Architecture principles and includes a reproducible machine-learning bootstrap pipeline for synthetic data generation, data cleaning, leakage-aware feature engineering, model evaluation, and historical-feature pre-warming.
+The service follows Clean Architecture principles and includes a reproducible machine-learning bootstrap pipeline for synthetic data generation, data cleaning, leakage-aware feature engineering, model evaluation, historical-feature pre-warming, and a standalone BullMQ consumer for completed queue events.
 
-> **Current ML status:** The SCRUM-1602 pipeline has been implemented and its unit tests pass. The verified training candidate and Redis aggregates use synthetic data. Real-world prediction accuracy, production serving compatibility, and sub-50 ms prediction latency have not yet been established.
+> **Current status:** SCRUM-1602 establishes the ML data-to-model pipeline. SCRUM-1608 adds a locally tested Python BullMQ consumer with MongoDB persistence and idempotent event handling. The training candidate and historical aggregates use synthetic data. Real-world prediction accuracy, production serving compatibility, and sub-50 ms prediction latency have not yet been established. Integration with the MERN BullMQ producer remains pending.
 
 ---
 
@@ -22,6 +22,7 @@ The service follows Clean Architecture principles and includes a reproducible ma
 - [Model Training and Evaluation](#model-training-and-evaluation)
 - [Redis Historical Feature Pre-warming](#redis-historical-feature-pre-warming)
 - [Running the API](#running-the-api)
+- [BullMQ Event Consumer](#bullmq-event-consumer)
 - [Testing and Code Quality](#testing-and-code-quality)
 - [Docker](#docker)
 - [Branching and CI](#branching-and-ci)
@@ -31,65 +32,94 @@ The service follows Clean Architecture principles and includes a reproducible ma
 
 ## Architecture
 
-SpotQ ETA separates business logic, application orchestration, infrastructure integrations, and HTTP presentation.
+SpotQ ETA separates HTTP presentation, application logic, infrastructure integrations, and machine-learning workflows.
 
 ```text
-                    ┌──────────────────────────┐
-                    │     FastAPI Application  │
-                    │       app/main.py        │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │ Presentation / HTTP API  │
-                    │ Health and Prediction   │
-                    └────────────┬─────────────┘
-                                 │
-                    ┌────────────▼─────────────┐
-                    │ Application & Domain     │
-                    │ Use Cases / Business     │
-                    │ Rules                    │
-                    └────────────┬─────────────┘
-                                 │
-             ┌───────────────────┼───────────────────┐
-             │                   │                   │
-    ┌────────▼────────┐ ┌────────▼────────┐ ┌────────▼────────┐
-    │ MongoDB         │ │ Redis           │ │ ML Model        │
-    │ Queue Records   │ │ Historical ETA  │ │ XGBoost         │
-    │                 │ │ Features        │ │ Artifacts       │
-    └─────────────────┘ └─────────────────┘ └─────────────────┘
+                       ┌──────────────────────────┐
+                       │     FastAPI Application  │
+                       │       app/main.py        │
+                       └────────────┬─────────────┘
+                                    │
+                       ┌────────────▼─────────────┐
+                       │ Presentation / HTTP API  │
+                       │ Health and Prediction    │
+                       └────────────┬─────────────┘
+                                    │
+                       ┌────────────▼─────────────┐
+                       │ Application & Domain     │
+                       │ Use Cases / Business     │
+                       │ Rules                    │
+                       └────────────┬─────────────┘
+                                    │
+                  ┌─────────────────┼─────────────────┐
+                  │                 │                 │
+         ┌────────▼────────┐ ┌──────▼────────┐ ┌──────▼────────┐
+         │ MongoDB         │ │ Redis         │ │ XGBoost       │
+         │ Queue Events    │ │ Historical ETA│ │ Model         │
+         │                 │ │ Features      │ │ Artifacts     │
+         └─────────────────┘ └───────────────┘ └───────────────┘
 
-                 Offline ML Bootstrap Pipeline
-                                 │
-                 ┌───────────────▼───────────────┐
-                 │ Synthetic Data Generation     │
-                 │ Cleaning and Feature Building │
-                 │ Chronological Evaluation      │
-                 │ XGBoost Candidate Training    │
-                 │ Redis Feature Pre-warming    │
-                 └───────────────────────────────┘
+
+                 Asynchronous Queue Ingestion
+
+         ┌────────────────────┐
+         │ MERN Backend        │
+         │ BullMQ Producer     │
+         └──────────┬─────────┘
+                    │ Enqueue completed queue events
+         ┌──────────▼─────────┐
+         │ Redis 7.x           │
+         │ BullMQ Queue        │
+         │ ml-eta-queue        │
+         └──────────┬─────────┘
+                    │ Consume jobs
+         ┌──────────▼─────────┐
+         │ Python BullMQ       │
+         │ Consumer Worker     │
+         └──────────┬─────────┘
+                    │ Validate and persist
+         ┌──────────▼─────────┐
+         │ MongoDB             │
+         │ queue_events        │
+         └────────────────────┘
+
+
+              Offline ML Bootstrap Pipeline
+
+         ┌───────────────────────────────┐
+         │ Synthetic Data Generation     │
+         │ Cleaning and Feature Building │
+         │ Chronological Evaluation      │
+         │ XGBoost Candidate Training    │
+         │ Redis Feature Pre-warming     │
+         └───────────────────────────────┘
 ```
 
-The offline training pipeline and Redis pre-warming workflow prepare data and model assets. They do not introduce a new real-time prediction endpoint or an automated model-promotion mechanism.
+The API and queue consumer are separate processes. The consumer receives events through BullMQ and writes validated queue records to MongoDB. It does not require an HTTP bridge between the MERN producer and the Python service.
+
+The offline training pipeline prepares model candidates and historical features. It does not introduce an automated model-promotion mechanism.
 
 ## Project Structure
 
 ```text
 spotq-eta-service/
 ├── app/
-│   ├── application/                  # Application use cases
-│   ├── domain/                       # Core business rules
+│   ├── application/
+│   │   ├── schemas/
+│   │   │   └── queue_event.py
+│   │   └── queue_event_processor.py
+│   ├── domain/
 │   ├── infrastructure/
-│   │   ├── config/                   # Pydantic settings
-│   │   ├── cache/                    # Redis client
-│   │   ├── database/                 # MongoDB client
-│   │   ├── logging/                  # Structured logging
-│   │   ├── observability/             # Metrics
+│   │   ├── config/
+│   │   ├── cache/
+│   │   ├── database/
+│   │   ├── logging/
+│   │   ├── observability/
+│   │   ├── queue/
+│   │   │   └── bullmq_worker.py
 │   │   └── ml_models/
 │   │       ├── artifacts/
 │   │       │   └── candidates/
-│   │       │       ├── eta_model_candidate.json
-│   │       │       ├── eta_training_report.json
-│   │       │       └── redis_prewarm_report.json
 │   │       ├── data_cleaning.py
 │   │       ├── dataset.py
 │   │       ├── diagnostics.py
@@ -108,13 +138,15 @@ spotq-eta-service/
 │   ├── generate_dummy_model.py
 │   ├── seed_training_data.py
 │   ├── train_eta_model.py
-│   └── prewarm_redis_history.py
+│   ├── prewarm_redis_history.py
+│   ├── run_queue_worker.py
+│   ├── produce_test_queue_event.py
+│   ├── produce_duplicate_test_event.py
+│   ├── produce_conflicting_test_event.py
+│   └── produce_invalid_test_event.py
 ├── tests/
 │   ├── unit/
 │   └── integration/
-├── Development Protection.json
-├── Staging Protection.json
-├── Main Protection.json
 ├── Dockerfile
 ├── docker-compose.dev.yml
 ├── pyproject.toml
@@ -122,7 +154,7 @@ spotq-eta-service/
 └── README.md
 ```
 
-Model candidates and reports are stored separately from the existing serving artifact. Generated Python cache files are omitted from the structure above.
+The queue-event schema is shared between the HTTP ingestion endpoint and the application processor. The processor contains event validation and persistence logic, while the infrastructure worker handles BullMQ job processing and failure classification.
 
 ## Technology Stack
 
@@ -132,11 +164,15 @@ Model candidates and reports are stored separately from the existing serving art
 | API framework | FastAPI |
 | Dependency management | uv |
 | Database | MongoDB |
-| Feature cache | Redis |
+| Feature cache and queue transport | Redis |
+| Queue processing | BullMQ Python worker |
+| Node.js producer | BullMQ v6, as reported by the MERN team |
+| Python queue library | `bullmq==3.3.4` |
 | Primary model | XGBoost |
 | Benchmark model | Random Forest |
 | Data processing | Pandas and NumPy |
-| Validation | Pytest |
+| Validation | Pydantic |
+| Testing | Pytest |
 | Configuration | Pydantic Settings |
 | Logging | Structlog |
 | Observability | Prometheus instrumentation |
@@ -150,8 +186,10 @@ Model candidates and reports are stored separately from the existing serving art
 - Git
 - Docker and Docker Compose, if using containers
 - Access to a configured MongoDB instance
-- Access to a configured Redis instance
-- Infisical CLI and authorized project access, if your environment uses Infisical for secrets
+- Access to Redis
+- Infisical CLI and authorized project access, if required by your environment
+
+For the BullMQ consumer, the development environment must also use the queue name and prefix agreed with the MERN team.
 
 ## Local Setup
 
@@ -164,17 +202,13 @@ cd spotq-eta-service
 
 ### 2. Install dependencies
 
-This project uses `uv` and the committed lockfile.
-
 ```bash
 uv sync --locked
 ```
 
-If the project defines a separate development dependency group, install it according to the dependency groups declared in `pyproject.toml`.
-
 ### 3. Configure environment variables
 
-Use your authorized environment configuration method. See [Configuration and Secrets](#configuration-and-secrets).
+Configure the required environment variables using the project's approved secret-management method.
 
 ### 4. Verify the environment
 
@@ -183,27 +217,47 @@ uv run python --version
 uv run pytest tests/unit -q
 ```
 
----
-
 ## Configuration and Secrets
 
 SpotQ uses Pydantic Settings to load application configuration. MongoDB and Redis connectivity has been verified in the development environment.
 
-When using Infisical, authenticate with your authorized account and inject the appropriate project environment variables into the process.
+When using Infisical, authenticate with your authorized account:
 
 ```bash
 infisical login
 ```
 
-To run a command with injected secrets, use the project and environment configuration appropriate for your setup:
+Run the API with the project and environment configuration appropriate for your setup:
 
 ```bash
-infisical run --projectId f10d866c-bf75-43e5-b6fb-5059509981b3 --env=dev -- uv run uvicorn app.main:app --reload --port 8000
+infisical run --projectId <your-project-id> --env=dev -- uv run uvicorn app.main:app --reload --port 8000
 ```
 
-For local execution without Infisical, configure the required environment variables using the names defined in `app/infrastructure/config/settings.py`.
+For local execution without Infisical, configure the required variables using the names defined in `app/infrastructure/config/settings.py`.
 
-**Security guidelines**
+### BullMQ configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BULLMQ_QUEUE_NAME` | `ml-eta-queue` | BullMQ queue consumed by the Python worker |
+| `BULLMQ_PREFIX` | `bull` | BullMQ Redis key prefix |
+| `BULLMQ_CONCURRENCY` | `5` | Maximum concurrent jobs; valid range 1–50 |
+
+The MERN team has reported the following development configuration:
+
+- Queue name: `ml-eta-queue`
+- BullMQ version: `^6.0.9`
+- ioredis version: `^6.0.0`
+- Redis server: Redis 7.x using the official Docker image
+- Key prefix: `bull`
+
+Redis keys therefore follow the expected pattern `bull:ml-eta-queue:*`.
+
+The Python consumer uses its configured Redis connection settings. Ensure its Redis hostname, port, authentication, queue name, and prefix match the development environment used by the producer. Inside Docker Compose, a service hostname may differ from the host machine's `localhost`.
+
+The Python package version is pinned separately in `pyproject.toml`. Cross-language interoperability with the MERN producer has not yet been verified.
+
+### Security guidelines
 
 - Never commit `.env` files, access tokens, database credentials, or service tokens.
 - Do not print secret values when debugging configuration.
@@ -237,8 +291,6 @@ The pipeline supports development and integration testing without requiring live
 
 ### Inspect script options
 
-Check the available arguments before running a script:
-
 ```bash
 uv run python scripts/seed_training_data.py --help
 uv run python scripts/train_eta_model.py --help
@@ -264,17 +316,7 @@ The synthetic demand model incorporates:
 
 Each generated record includes synthetic-data identification fields. Stable event identifiers and idempotent insertion logic help prevent duplicate events on repeated seeding.
 
-### Run seeding
-
-First inspect the supported arguments:
-
-```bash
-uv run python scripts/seed_training_data.py --help
-```
-
-Then execute the command using the configured database environment and the intended collection, `spotq_production`.
-
-The script writes to MongoDB. Verify the target environment before execution.
+Before executing the script, inspect its supported arguments and verify the target database and collection. The script writes to MongoDB.
 
 ---
 
@@ -300,7 +342,7 @@ Rejected records must be accounted for with exclusion reasons.
 
 **Module:** `app/infrastructure/ml_models/features.py`
 
-The model uses the following six input features in this exact order:
+The model uses six input features in this exact order:
 
 | Position | Feature | Type |
 |---:|---|---|
@@ -315,7 +357,7 @@ The model uses the following six input features in this exact order:
 
 Restaurant identity is used to isolate historical statistics but is not automatically included as a numeric model input.
 
-Historical features must only use eligible completed records available strictly before the prediction timestamp. Future observations and the current record's target must not influence the feature values.
+Historical features must only use eligible completed records available strictly before the prediction timestamp. Future observations and the current record's target must not influence feature values.
 
 Training and inference must follow the same feature schema, ordering, data types, and fallback semantics.
 
@@ -342,8 +384,6 @@ This command can regenerate candidate outputs. Review the configured environment
 
 ### Verified synthetic results
 
-The previously generated training report contains the following results:
-
 | Model | Holdout MAE | Holdout RMSE | R² |
 |---|---:|---:|---:|
 | Training median | 10.86 min | 15.36 min | -0.0420 |
@@ -367,13 +407,14 @@ app/infrastructure/ml_models/artifacts/candidates/
 
 The report includes training configuration, cleaning diagnostics, feature information, evaluation results, and model metadata.
 
-The candidate is not automatically promoted to the serving artifact. The candidate's six-feature contract must be checked against the existing inference loader and serving contract before promotion.
+The candidate is not automatically promoted to the serving artifact. Its six-feature contract must be checked against the existing inference loader and serving contract before promotion.
 
 ---
 
 ## Redis Historical Feature Pre-warming
 
-**Script:** `scripts/prewarm_redis_history.py`  
+**Script:** `scripts/prewarm_redis_history.py`
+
 **Reader helper:** `app/infrastructure/ml_models/redis_history.py`
 
 The pre-warm script aggregates completed queue records by restaurant, local weekday, and local hour, using the configured timezone mapping.
@@ -439,12 +480,137 @@ uv run uvicorn app.main:app --reload --port 8000
 With Infisical:
 
 ```bash
-infisical run --projectId f10d866c-bf75-43e5-b6fb-5059509981b3 --env=dev -- uv run uvicorn app.main:app --reload --port 8000
+infisical run --projectId <your-project-id> --env=dev -- uv run uvicorn app.main:app --reload --port 8000
 ```
 
-The verified development endpoints are `GET /healthz`, `GET /api/v1/eta/predict`, and the Swagger UI at `/docs`. The OpenAPI schema is available at `/openapi.json`. These are local development URLs when the service runs on `127.0.0.1:8000`.
+The verified development endpoints are:
+
+- `GET /healthz`
+- `GET /api/v1/eta/predict`
+- Swagger UI at `/docs`
+- OpenAPI schema at `/openapi.json`
+
+These are local development URLs when the service runs on `127.0.0.1:8000`.
 
 Development serving verification: the six-feature synthetic candidate loaded successfully, and the prediction endpoint returned HTTP 200. The existing seven-feature `eta_model_v1.json` artifact is incompatible with the canonical six-feature serving contract and remains uncommitted. The successful development test does not establish real-world model accuracy.
+
+---
+
+## BullMQ Event Consumer
+
+**Worker:** `app/infrastructure/queue/bullmq_worker.py`
+
+**Entrypoint:** `scripts/run_queue_worker.py`
+
+The BullMQ consumer runs as a standalone Python process, separate from FastAPI. It consumes completed queue events from Redis and persists validated records to MongoDB.
+
+### Architecture
+
+```text
+MERN Backend
+    │
+    │ Enqueue completed queue event
+    ▼
+BullMQ Queue: ml-eta-queue
+    │
+    ▼
+Redis 7.x
+Prefix: bull
+    │
+    ▼
+Python BullMQ Consumer
+    │
+    ├── Validate event schema
+    ├── Validate timestamps and wait duration
+    ├── Persist to MongoDB
+    ├── Handle identical duplicates idempotently
+    └── Permanently reject invalid/conflicting events
+    │
+    ▼
+MongoDB: queue_events
+```
+
+### Run the consumer
+
+Ensure Redis and MongoDB are reachable and the environment is configured to match the producer.
+
+Set the queue configuration:
+
+```bash
+export BULLMQ_QUEUE_NAME=ml-eta-queue
+export BULLMQ_PREFIX=bull
+export BULLMQ_CONCURRENCY=5
+```
+
+Then run the worker:
+
+```bash
+uv run python scripts/run_queue_worker.py
+```
+
+The worker initializes MongoDB, ensures the unique queue-event index exists, creates the BullMQ consumer, and begins processing jobs.
+
+When using Infisical, use the authorized project configuration for the worker process:
+
+```bash
+infisical run --projectId <your-project-id> --env=dev -- uv run python scripts/run_queue_worker.py
+```
+
+Run the API and consumer as separate processes. In containerized development, ensure both services can reach the same Redis instance and use compatible connection settings.
+
+### Event validation
+
+The shared schema is defined in `app/application/schemas/queue_event.py`.
+
+Each event must include:
+
+| Field | Validation |
+|---|---|
+| `queue_entry_id` | Non-empty string, maximum 128 characters |
+| `restaurant_id` | Non-empty string, maximum 128 characters |
+| `party_size` | Integer, 1–100 |
+| `joined_at` | Valid ISO 8601 timestamp with timezone |
+| `completed_at` | Valid ISO 8601 timestamp with timezone, after joining |
+| `actual_wait_time_minutes` | Positive finite number, maximum 120 |
+| `total_people_ahead_at_join` | Integer, 0–1000 |
+
+The processor normalizes timestamps to UTC and checks that the difference between `joined_at` and `completed_at` matches `actual_wait_time_minutes` within a tolerance of 0.51 minutes.
+
+### Persistence and idempotency
+
+The processor writes events to the MongoDB `queue_events` collection.
+
+A unique index named `uq_queue_entry_id` on `queue_entry_id` prevents duplicate event records, provided existing data satisfies the uniqueness constraint.
+
+The processor handles redelivery as follows:
+
+- **New event:** validates and persists the event.
+- **Identical duplicate:** confirms that the existing event matches and returns a successful duplicate result without inserting another record.
+- **Conflicting duplicate:** rejects reuse of the same event ID with different event data and preserves the existing record.
+- **Invalid event:** permanently rejects schema-invalid or business-invalid payloads.
+- **Transient failure:** propagates unexpected database or processing errors so BullMQ can apply its retry policy.
+
+The worker only returns success after MongoDB persistence succeeds or an identical existing event has been confirmed.
+
+### Retry and failed-job handling
+
+The consumer classifies invalid payloads and conflicting duplicates as permanent failures using BullMQ's `UnrecoverableError`. Unexpected errors are propagated to the queue library for retry handling.
+
+Retry attempts, backoff, and failed-job retention must be configured by the producer when it creates jobs. The Python consumer does not retroactively define those job options.
+
+Failed jobs should remain available according to the agreed retention policy so they can be inspected and, when appropriate, replayed.
+
+### Local verification
+
+The following scenarios have been tested locally using a Python BullMQ producer and the development Redis and MongoDB services:
+
+- Valid event persisted successfully and the job reached the completed state.
+- Identical duplicate did not create a second MongoDB record.
+- Conflicting duplicate failed permanently, and the original record remained unchanged.
+- Invalid payload failed permanently.
+- Unit tests confirmed that unexpected processing errors propagate for retry handling.
+
+**Integration status:** Python-side queue processing and persistence are verified. The MERN producer is still under development, so cross-language integration has not yet been confirmed. The actual Node.js job name, payload, retry/backoff configuration, and failed-job retention must be checked when the producer becomes available.
 
 ---
 
@@ -456,7 +622,7 @@ Development serving verification: the six-feature synthetic candidate loaded suc
 uv run pytest tests/unit -q
 ```
 
-The latest verified unit-test run completed with **84 passed** and one non-blocking Starlette deprecation warning.
+The latest verified unit-test run completed with **100 passed** and two non-blocking warnings.
 
 ### Run the full test suite
 
@@ -476,10 +642,8 @@ Ensure the required MongoDB and Redis credentials are configured before executin
 
 ### Run linting
 
-If Ruff is installed in the project environment:
-
 ```bash
-uv run ruff check app/ tests/ scripts/
+uv run ruff check app/ scripts/ tests/
 ```
 
 ### Check whitespace errors
@@ -487,6 +651,8 @@ uv run ruff check app/ tests/ scripts/
 ```bash
 git diff --check
 ```
+
+The latest SCRUM-1608 verification confirmed that Ruff and `git diff --check` pass, with all 100 unit tests passing.
 
 ---
 
@@ -500,17 +666,17 @@ The repository includes a `Dockerfile` and `docker-compose.dev.yml`.
 docker build -t spotq-eta-service:latest .
 ```
 
-### Run the container
-
-Supply the required configuration through your approved secret-management mechanism or runtime environment:
+### Run the API container
 
 ```bash
 docker run --rm -p 8000:8000 spotq-eta-service:latest
 ```
 
-If the container is configured to launch through Infisical, provide the appropriate authorized runtime configuration. Do not place real service tokens directly in the README or commit them to source control.
+Supply the required configuration through the approved secret-management mechanism or runtime environment. Do not put service tokens directly in the README or commit them to source control.
 
 Development verification confirmed `GET /healthz`, `GET /api/v1/eta/predict`, and `/openapi.json` returned HTTP 200. The Docker API container previously failed to start because its Infisical runtime configuration did not provide the required project configuration/authentication. Container startup remains unresolved; do not consider Docker deployment verified.
+
+The BullMQ consumer must also be deployed as a separately managed process with access to the configured Redis and MongoDB instances.
 
 ---
 
@@ -544,32 +710,36 @@ The documented CI workflow is `.github/workflows/ci.yml`. When present and confi
 
 ## Current Limitations and Next Steps
 
-The SCRUM-1602 implementation establishes the data-to-model workflow, but the following items must be verified before treating the candidate as a production-ready model:
+The SCRUM-1602 implementation establishes the data-to-model workflow. SCRUM-1608 adds a locally verified BullMQ consumer, but the MERN producer integration remains pending.
+
+The following items must be verified before treating the model and ingestion integration as production-ready:
 
 1. **Artifact compatibility:** The six-feature development candidate loaded successfully against the canonical serving contract. The separate seven-feature serving artifact remains incompatible and must not be promoted without deliberate schema reconciliation.
 2. **Artifact promotion:** Promote a candidate only after validation succeeds. A failed candidate must not overwrite an existing valid serving artifact.
 3. **Training provenance:** Regenerate the candidate and report together when the report must identify the current implementation commit as the exact training code version.
 4. **Real-data evaluation:** Evaluate on representative, trustworthy restaurant outcomes before making real-world accuracy claims.
-5. **Integration verification:** Verify the configured MongoDB collection, Redis keys, fallback behavior, and intended service loading path in the target environment.
+5. **Data integration:** Verify the configured MongoDB collection, Redis keys, fallback behavior, and intended service loading path in the target environment.
 6. **Performance verification:** Twenty sequential loopback requests were below 50 ms, but a representative concurrent load test is still required before claiming the latency target is met.
 7. **Fallback investigation:** The live prediction returned `fallback_used: true`; investigate the historical-feature lookup and confirm the intended Redis instance and fallback behavior.
 8. **Container startup:** Resolve Infisical configuration for the Docker API container and repeat health and prediction checks inside the container.
+9. **BullMQ interoperability:** Validate the Node.js producer against the Python consumer using `ml-eta-queue`, the `bull` prefix, the actual job name and payload, and the producer's retry/backoff and failed-job retention settings.
+10. **Queue deployment:** Run the worker as a separately managed process with appropriate Redis and MongoDB configuration.
+11. **MongoDB index readiness:** Confirm existing production records contain no duplicate `queue_entry_id` values before creating the unique index.
+12. **Operational resilience:** Test worker recovery after Redis or MongoDB interruptions, graceful shutdown, and replay of retained failed jobs.
 
-### SCRUM-1602 verification summary
+### Verification summary
 
-- MongoDB connectivity: verified.
-- Redis connectivity: verified.
+- MongoDB connectivity: verified in development.
+- Redis connectivity: verified in development.
 - Synthetic pre-warm: completed, 649 buckets written.
 - Candidate XGBoost model loading: verified.
-- Unit tests: 84 passed.
+- SCRUM-1608 unit tests: latest run, 100 passed.
+- Ruff and whitespace checks: passed on the current feature branch.
+- Queue event persistence: verified using a Python producer and consumer.
+- Duplicate and invalid event handling: verified locally.
+- MERN producer interoperability: pending.
 - Real-world ETA accuracy: not established.
 - Six-feature candidate loading in development: verified.
 - Seven-feature artifact compatibility: unresolved; artifact remains uncommitted.
 - Docker API startup: unresolved.
 - Live prediction historical-feature fallback: observed; root cause not yet confirmed.
-
----
-
-## License and Contribution
-
-Follow the repository's contribution process and branch protection rules. Submit changes through a feature branch and pull request, with tests and relevant evaluation reports included for review.

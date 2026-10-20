@@ -77,6 +77,22 @@ class Settings(BaseSettings):
     ETA_MIN_WAIT_MINUTES: float = Field(default=1.0, gt=0, le=120)
     ETA_MAX_WAIT_MINUTES: float = Field(default=120.0, gt=0, le=120)
 
+    # BullMQ event consumer
+    BULLMQ_QUEUE_NAME: str = Field(
+        default="ml-eta-queue",
+        description="BullMQ queue used by the MERN producer",
+    )
+    BULLMQ_PREFIX: str = Field(
+        default="bull",
+        description="BullMQ Redis key prefix; must match the producer",
+    )
+    BULLMQ_CONCURRENCY: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Maximum concurrent queue-event jobs",
+    )
+
     @model_validator(mode="after")
     def validate_production_model(self) -> "Settings":
         """Enforce production model configuration safeguards."""
