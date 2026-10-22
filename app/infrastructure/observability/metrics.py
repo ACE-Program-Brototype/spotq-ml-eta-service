@@ -70,3 +70,39 @@ ETA_CLAMPED_TOTAL = _get_or_create_counter(
     "spotq_eta_clamped_total",
     "ETA predictions clamped to configured minimum or maximum bounds",
 )
+
+
+
+# Model lifecycle metrics deliberately avoid model-version labels.
+MODEL_LOAD_SUCCESS_TOTAL = _get_or_create_counter(
+    "spotq_model_load_success_total",
+    "Successful ETA model loads",
+)
+MODEL_LOAD_FAILURE_TOTAL = _get_or_create_counter(
+    "spotq_model_load_failure_total",
+    "Failed ETA model load attempts",
+)
+MODEL_RELOAD_SUCCESS_TOTAL = _get_or_create_counter(
+    "spotq_model_reload_success_total",
+    "Successful ETA model reloads",
+)
+MODEL_RELOAD_FAILURE_TOTAL = _get_or_create_counter(
+    "spotq_model_reload_failure_total",
+    "Failed ETA model reloads",
+)
+MODEL_RELOAD_DURATION = _get_or_create_histogram(
+    "spotq_model_reload_duration_seconds",
+    "Duration of ETA model reload attempts",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+)
+
+MODEL_LOAD_DURATION = _get_or_create_histogram(
+    "spotq_model_load_duration_seconds",
+    "Duration of initial ETA model load attempts",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+)
+
+ETA_INFERENCE_FAILURE_TOTAL = _get_or_create_counter(
+    "spotq_eta_inference_failure_total",
+    "ETA prediction failures during model inference",
+)

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.infrastructure.ml_models.features import FEATURE_NAMES
 from app.presentation.predict import router as eta_router
-
+from types import SimpleNamespace
 
 client = TestClient(app)
 VALID_PARAMS = {
@@ -28,7 +28,26 @@ def _mock_booster(prediction):
 def prediction_dependencies(monkeypatch):
     """Use a fake compatible model and deterministic cold-start history."""
     booster = _mock_booster(15.0)
-    monkeypatch.setattr(eta_router.model_loader, "booster", booster)
+
+    snapshot = SimpleNamespace(
+        booster=booster,
+        status="loaded",
+        model_version="test-model-v1",
+        artifact_id="test-artifact",
+        loaded_at="2026-10-22T00:00:00+00:00",
+        failure_reason=None,
+    )
+
+    monkeypatch.setattr(
+        eta_router.model_loader,
+        "get_snapshot",
+        lambda: snapshot,
+    )
+    monkeypatch.setattr(
+        eta_router.model_loader,
+        "is_healthy",
+        lambda: True,
+    )
     monkeypatch.setattr(
         eta_router,
         "get_historical_average",
@@ -39,6 +58,7 @@ def prediction_dependencies(monkeypatch):
         "_restaurant_timezone",
         lambda restaurant_id: "UTC",
     )
+
     return booster
 
 

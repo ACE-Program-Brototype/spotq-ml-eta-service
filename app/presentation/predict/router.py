@@ -21,6 +21,7 @@ from app.infrastructure.ml_models.redis_history import get_historical_average
 from app.infrastructure.observability.metrics import (
     ETA_CLAMPED_TOTAL,
     ETA_FALLBACK_TOTAL,
+    ETA_INFERENCE_FAILURE_TOTAL,
     ETA_INFERENCE_LATENCY,
     ETA_REQUEST_LATENCY,
 )
@@ -125,8 +126,13 @@ async def predict_eta(
                 },
             )
 
-        booster = model_loader.booster
-        if booster is None:
+        model_snapshot = model_loader.get_snapshot()
+        booster = model_snapshot.booster
+
+        if (
+            booster is None
+            or model_snapshot.status not in ("loaded", "loaded_synthetic")
+        ):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -199,6 +205,7 @@ async def predict_eta(
     except HTTPException:
         raise
     except (ValueError, TypeError) as exc:
+        ETA_INFERENCE_FAILURE_TOTAL.inc()
         logger.error(
             "ETA prediction rejected invalid model or feature data",
             restaurant_id=restaurant_id,
@@ -212,6 +219,7 @@ async def predict_eta(
             },
         ) from exc
     except Exception as exc:
+        ETA_INFERENCE_FAILURE_TOTAL.inc()
         logger.error(
             "ETA prediction failed",
             restaurant_id=restaurant_id,

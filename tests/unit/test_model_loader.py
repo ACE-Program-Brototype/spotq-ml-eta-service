@@ -21,7 +21,7 @@ def create_test_artifact(
     path: Path,
     *,
     feature_names: tuple[str, ...],
-    dataset_mode: str,
+    dataset_mode: str | None = None,
 ) -> Path:
     """Create a small deterministic XGBoost artifact for loader tests."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,7 +49,8 @@ def create_test_artifact(
         training_data,
         num_boost_round=1,
     )
-    booster.set_attr(dataset_mode=dataset_mode)
+    if dataset_mode is not None:
+        booster.set_attr(dataset_mode=dataset_mode)
     booster.save_model(str(path))
 
     return path
@@ -126,6 +127,46 @@ def test_production_rejects_synthetic_candidate_even_if_flag_is_set(
     assert loader.booster is None
     assert loader.status == "incompatible"
 
+def test_model_without_dataset_mode_metadata_is_rejected(
+    tmp_path, monkeypatch
+):
+    artifact = create_test_artifact(
+        tmp_path / "missing_metadata.json",
+        feature_names=FEATURE_NAMES,
+    )
+    loader = configure_loader(
+        monkeypatch,
+        environment=EnvironmentType.DEVELOPMENT,
+        allow_synthetic=True,
+        model_path=artifact,
+    )
+
+    assert loader.load_model() is False
+    assert loader.booster is None
+    assert loader.status == "incompatible"
+    assert "dataset_mode metadata" in loader.failure_reason
+
+
+def test_model_with_invalid_dataset_mode_metadata_is_rejected(
+    tmp_path, monkeypatch
+):
+    artifact = create_test_artifact(
+        tmp_path / "invalid_metadata.json",
+        feature_names=FEATURE_NAMES,
+        dataset_mode="unknown",
+    )
+    loader = configure_loader(
+        monkeypatch,
+        environment=EnvironmentType.DEVELOPMENT,
+        allow_synthetic=True,
+        model_path=artifact,
+    )
+
+    assert loader.load_model() is False
+    assert loader.booster is None
+    assert loader.status == "incompatible"
+    assert "dataset_mode metadata" in loader.failure_reason
+
 
 def test_active_model_with_incompatible_schema_is_rejected(
     tmp_path, monkeypatch
@@ -146,3 +187,61 @@ def test_active_model_with_incompatible_schema_is_rejected(
     assert loader.booster is None
     assert loader.status == "incompatible"
     assert "feature schema mismatch" in loader.failure_reason
+
+
+
+def test_failed_reload_preserves_active_model(tmp_path, monkeypatch):
+    """Keep the active model when a replacement artifact is missing."""
+    artifact = create_test_artifact(
+        tmp_path / "valid_model.json",
+        feature_names=FEATURE_NAMES,
+        dataset_mode="real",
+    )
+    loader = configure_loader(
+        monkeypatch,
+        environment=EnvironmentType.DEVELOPMENT,
+        allow_synthetic=True,
+        model_path=artifact,
+    )
+
+    assert loader.load_model() is True
+    active_model = loader.booster
+    active_version = loader.model_version
+
+    monkeypatch.setattr(settings, "MODEL_PATH", str(tmp_path / "missing.json"))
+
+    assert loader.load_model() is False
+    assert loader.booster is active_model
+    assert loader.model_version == active_version
+    assert loader.is_healthy() is True
+
+
+def test_rollback_restores_previous_model(tmp_path, monkeypatch):
+    """Restore the previous model after a successful replacement."""
+    first = create_test_artifact(
+        tmp_path / "model_v1.json",
+        feature_names=FEATURE_NAMES,
+        dataset_mode="real",
+    )
+    second = create_test_artifact(
+        tmp_path / "model_v2.json",
+        feature_names=FEATURE_NAMES,
+        dataset_mode="real",
+    )
+    loader = configure_loader(
+        monkeypatch,
+        environment=EnvironmentType.DEVELOPMENT,
+        allow_synthetic=True,
+        model_path=first,
+    )
+
+    assert loader.load_model() is True
+    assert loader.model_version == "model_v1"
+
+    monkeypatch.setattr(settings, "MODEL_PATH", str(second))
+    assert loader.load_model() is True
+    assert loader.model_version == "model_v2"
+
+    assert loader.rollback_model() is True
+    assert loader.model_version == "model_v1"
+    assert loader.is_healthy() is True

@@ -61,6 +61,12 @@ class Settings(BaseSettings):
         description="Allow a synthetic-data model for development only",
     )
 
+    ETA_MODEL_ADMIN_KEY: Optional[str] = Field(
+        default=None,
+        min_length=32,
+        description="Secret required to authorize model reload operations",
+    )
+
 
     DEFAULT_RESTAURANT_TIMEZONE: str = Field(
         default="UTC",

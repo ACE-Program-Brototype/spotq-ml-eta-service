@@ -56,3 +56,19 @@ def test_metrics_endpoint_exposed(mock_infrastructure):
         assert response.status_code == 200
         assert "text/plain" in response.headers.get("content-type", "").lower()
         assert "http_requests_total" in response.text or "python_gc_objects_collected_total" in response.text
+
+
+def test_lifespan_fails_when_model_is_invalid():
+    """Prevent startup when the required ETA model cannot be loaded."""
+    with patch(
+        "app.main.redis_manager.connect", new_callable=AsyncMock
+    ), patch(
+        "app.main.redis_manager.disconnect", new_callable=AsyncMock
+    ), patch(
+        "app.main.mongo_manager.connect", new_callable=AsyncMock
+    ), patch(
+        "app.main.mongo_manager.disconnect", new_callable=AsyncMock
+    ), patch("app.main.model_loader.load_model", return_value=False):
+        with pytest.raises(RuntimeError, match="no valid ETA model"):
+            with TestClient(app):
+                pass
