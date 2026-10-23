@@ -1,4 +1,4 @@
-"""Health diagnostics for the SpotQ ETA microservice."""
+"""Liveness, readiness, and dependency diagnostics for SpotQ ETA."""
 
 from typing import Any
 
@@ -18,52 +18,95 @@ from app.infrastructure.observability.metrics import (
 router = APIRouter(tags=["Health"])
 
 
-@router.get("/healthz", status_code=status.HTTP_200_OK)
-async def health_check() -> JSONResponse:
-    """Report dependency health and the active model's loading state.
+@router.get("/livez")
+async def liveness_check() -> dict[str, str]:
+    """Report whether the API process is alive."""
+    return {"status": "alive", "service": "spotq-eta-service"}
 
-    Returns:
-        A JSON response with dependency diagnostics. Returns HTTP 200 only
-        when Redis, MongoDB, and a schema-compatible model are all healthy;
-        otherwise, returns HTTP 503.
-    """
-    redis_healthy, redis_latency = await redis_manager.ping()
-    mongo_healthy, mongo_latency = await mongo_manager.ping()
-    model_healthy = model_loader.is_healthy()
 
-    REDIS_HEALTH_GAUGE.set(1 if redis_healthy else 0)
-    MONGO_HEALTH_GAUGE.set(1 if mongo_healthy else 0)
-    MODEL_LOADED_GAUGE.set(1 if model_healthy else 0)
-
-    is_healthy = redis_healthy and mongo_healthy and model_healthy
-    response_status = (
-        status.HTTP_200_OK
-        if is_healthy
-        else status.HTTP_503_SERVICE_UNAVAILABLE
+@router.get("/readyz")
+async def readiness_check() -> JSONResponse:
+    """Check required dependencies; Redis may degrade because fallback exists."""
+    mongo_ok, _ = await mongo_manager.ping()
+    redis_ok, _ = await redis_manager.ping()
+    model_snapshot = model_loader.get_snapshot()
+    model_ok = (
+        model_snapshot.booster is not None
+        and (
+            model_snapshot.status == "loaded"
+            or (
+                model_snapshot.status == "loaded_synthetic"
+                and settings.ENVIRONMENT == "development"
+                and settings.ALLOW_SYNTHETIC_MODEL
+            )
+        )
     )
 
-    model_details: dict[str, Any] = {
-        "status": model_loader.status,
-        "path": settings.MODEL_PATH,
-    }
-    if model_loader.failure_reason is not None:
-        model_details["reason"] = model_loader.failure_reason
+    MONGO_HEALTH_GAUGE.set(int(mongo_ok))
+    REDIS_HEALTH_GAUGE.set(int(redis_ok))
+    MODEL_LOADED_GAUGE.set(int(model_ok))
 
-    payload: dict[str, Any] = {
-        "status": "healthy" if is_healthy else "unhealthy",
+    ready = mongo_ok and model_ok
+    return JSONResponse(
+        status_code=200 if ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "model": "loaded" if model_ok else "unavailable",
+            "mongodb": "connected" if mongo_ok else "disconnected",
+            "redis": "connected" if redis_ok else "degraded_fallback_available",
+        },
+    )
+
+
+@router.get("/healthz")
+async def health_check() -> JSONResponse:
+    """Report detailed dependency status without exposing internal paths."""
+    redis_ok, redis_latency = await redis_manager.ping()
+    mongo_ok, mongo_latency = await mongo_manager.ping()
+    model_snapshot = model_loader.get_snapshot()
+    model_ok = (
+        model_snapshot.booster is not None
+        and (
+            model_snapshot.status == "loaded"
+            or (
+                model_snapshot.status == "loaded_synthetic"
+                and settings.ENVIRONMENT == "development"
+                and settings.ALLOW_SYNTHETIC_MODEL
+            )
+        )
+    )
+
+    REDIS_HEALTH_GAUGE.set(int(redis_ok))
+    MONGO_HEALTH_GAUGE.set(int(mongo_ok))
+    MODEL_LOADED_GAUGE.set(int(model_ok))
+
+    healthy = redis_ok and mongo_ok and model_ok
+    model_details: dict[str, Any] = {
+        "status": model_snapshot.status,
+        "version": model_snapshot.model_version,
+        "artifact_id": model_snapshot.artifact_id,
+        "loaded_at": model_snapshot.loaded_at,
+    }
+
+    if model_snapshot.failure_reason:
+        model_details["reason"] = (
+            "Model failed validation or is unavailable"
+        )
+
+    payload = {
+        "status": "healthy" if healthy else "unhealthy",
         "service": "spotq-eta-service",
         "environment": settings.ENVIRONMENT,
         "dependencies": {
             "redis_feature_store": {
-                "status": "connected" if redis_healthy else "disconnected",
+                "status": "connected" if redis_ok else "disconnected",
                 "latency_ms": redis_latency,
             },
             "mongodb_buffer": {
-                "status": "connected" if mongo_healthy else "disconnected",
+                "status": "connected" if mongo_ok else "disconnected",
                 "latency_ms": mongo_latency,
             },
             "xgboost_model_artifact": model_details,
         },
     }
-
-    return JSONResponse(status_code=response_status, content=payload)
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
