@@ -2,6 +2,7 @@
 """Tests for ETA model schema and training-data provenance safeguards."""
 
 from pathlib import Path
+from threading import Event, Thread
 
 import xgboost as xgb
 
@@ -245,3 +246,70 @@ def test_rollback_restores_previous_model(tmp_path, monkeypatch):
     assert loader.rollback_model() is True
     assert loader.model_version == "model_v1"
     assert loader.is_healthy() is True
+
+
+def test_inference_snapshot_remains_available_during_model_reload(
+    tmp_path, monkeypatch
+):
+    """Keep serving the active model while a replacement is being validated."""
+    first = create_test_artifact(
+        tmp_path / "model_v1.json",
+        feature_names=FEATURE_NAMES,
+        dataset_mode="real",
+    )
+    second = create_test_artifact(
+        tmp_path / "model_v2.json",
+        feature_names=FEATURE_NAMES,
+        dataset_mode="real",
+    )
+
+    loader = configure_loader(
+        monkeypatch,
+        environment=EnvironmentType.DEVELOPMENT,
+        allow_synthetic=True,
+        model_path=first,
+    )
+    assert loader.load_model() is True
+
+    original_snapshot = loader.get_snapshot()
+    assert original_snapshot.model_version == "model_v1"
+    assert original_snapshot.booster is not None
+
+    monkeypatch.setattr(settings, "MODEL_PATH", str(second))
+
+    candidate_loading = Event()
+    allow_activation = Event()
+    reload_result = []
+    original_load_candidate = loader._load_candidate
+
+    def blocked_load_candidate(model_path):
+        candidate_loading.set()
+        if not allow_activation.wait(timeout=5):
+            raise TimeoutError("Test timed out waiting to activate candidate")
+        return original_load_candidate(model_path)
+
+    monkeypatch.setattr(loader, "_load_candidate", blocked_load_candidate)
+
+    reload_thread = Thread(
+        target=lambda: reload_result.append(loader.load_model(is_reload=True))
+    )
+    reload_thread.start()
+
+    try:
+        assert candidate_loading.wait(timeout=5)
+
+        during_reload = loader.get_snapshot()
+        assert during_reload.model_version == "model_v1"
+        assert during_reload.booster is original_snapshot.booster
+        assert loader.is_healthy() is True
+    finally:
+        allow_activation.set()
+
+    reload_thread.join(timeout=5)
+
+    assert not reload_thread.is_alive()
+    assert reload_result == [True]
+
+    after_reload = loader.get_snapshot()
+    assert after_reload.model_version == "model_v2"
+    assert after_reload.booster is not original_snapshot.booster
