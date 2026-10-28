@@ -50,6 +50,20 @@ class Settings(BaseSettings):
     MONGO_DB_NAME: str = Field(
         default="spotq_eta_db", description="MongoDB database name"
     )
+    MONGO_COLLECTION_NAME: str = Field(
+        default="queue_events",
+        description="Collection storing completed queue events for training",
+    )
+
+    # MLflow Experiment Tracking Configuration
+    MLFLOW_TRACKING_URI: str = Field(
+        default="http://localhost:5000",
+        description="MLflow tracking server URI",
+    )
+    MLFLOW_EXPERIMENT_NAME: str = Field(
+        default="spotq-eta-training",
+        description="MLflow experiment name for SpotQ ETA model training",
+    )
 
     # XGBoost Machine Learning Artifact Path
     MODEL_PATH: str = Field(
