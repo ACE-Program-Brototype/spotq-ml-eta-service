@@ -54,6 +54,12 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests as live cloud integration tests (deselect with '-m \"not integration\"')"
 ]
+filterwarnings = [
+    "ignore::pydantic.warnings.PydanticDeprecatedSince212",
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+    "ignore::PendingDeprecationWarning:starlette.formparsers",
+    "ignore:Remove `format_exc_info` from your processor chain:UserWarning",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
