@@ -36,3 +36,7 @@ Main Protection.json
 Staging Protection.json
 # Generated ETA model candidates and training reports
 app/infrastructure/ml_models/artifacts/candidates/
+
+# MLflow local tracking & runs
+mlruns/
+*.db
