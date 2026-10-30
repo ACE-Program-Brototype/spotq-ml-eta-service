@@ -2,9 +2,9 @@
 
 A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time prediction. SpotQ ETA uses XGBoost model artifacts, MongoDB for queue data, and Redis for historical waiting-time features and asynchronous event processing.
 
-The service follows Clean Architecture principles and includes a reproducible machine-learning bootstrap pipeline for synthetic data generation, data cleaning, leakage-aware feature engineering, model evaluation, historical-feature pre-warming, and a standalone BullMQ consumer for completed queue events.
+The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, reproducible machine-learning bootstrap pipeline, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and a BullMQ consumer for completed queue events.
 
-> **Current status:** SCRUM-1602 establishes the ML data-to-model pipeline. SCRUM-1608 adds a locally tested Python BullMQ consumer with MongoDB persistence and idempotent event handling. The training candidate and historical aggregates use synthetic data. Real-world prediction accuracy, production serving compatibility, and sub-50 ms prediction latency have not yet been established. Integration with the MERN BullMQ producer remains pending.
+> **Current status (SCRUM-1197):** Implemented the **Automated ETA Model Training & Retraining Pipeline** using validated historical queue outcomes from MongoDB, MLflow experiment tracking with persistent run metadata, candidate eligibility thresholds (MAE/RMSE gates, baseline improvement, synthetic data safeguards), and contract-safe candidate verification without overwriting or disrupting the active production model. Ingestion via the BullMQ consumer (`ml-eta-queue`) feeds continuous retraining datasets.
 
 ---
 
@@ -16,10 +16,11 @@ The service follows Clean Architecture principles and includes a reproducible ma
 - [Prerequisites](#prerequisites)
 - [Local Setup](#local-setup)
 - [Configuration and Secrets](#configuration-and-secrets)
-- [ETA Machine Learning Pipeline](#eta-machine-learning-pipeline)
+- [Automated ETA Model Training & Retraining Pipeline](#automated-eta-model-training--retraining-pipeline)
 - [Synthetic Data Generation](#synthetic-data-generation)
 - [Data Cleaning and Feature Engineering](#data-cleaning-and-feature-engineering)
 - [Model Training and Evaluation](#model-training-and-evaluation)
+- [MLflow Experiment Tracking](#mlflow-experiment-tracking)
 - [Redis Historical Feature Pre-warming](#redis-historical-feature-pre-warming)
 - [Running the API](#running-the-api)
 - [BullMQ Event Consumer](#bullmq-event-consumer)
@@ -102,7 +103,7 @@ The offline training pipeline prepares model candidates and historical features.
 ## Project Structure
 
 ```text
-spotq-eta-service/
+spotq-ml-eta-service/
 ├── app/
 │   ├── application/
 │   │   ├── schemas/
@@ -125,8 +126,10 @@ spotq-eta-service/
 │   │       ├── diagnostics.py
 │   │       ├── features.py
 │   │       ├── loader.py
-│   │       └── redis_history.py
+│   │       ├── redis_history.py
+│   │       └── tracking.py
 │   ├── presentation/
+│   │   ├── admin/
 │   │   ├── api/v1/endpoints/
 │   │   ├── health/
 │   │   └── predict/
@@ -134,6 +137,9 @@ spotq-eta-service/
 │   └── main.py
 ├── config/
 │   └── restaurant_timezones.json
+├── docs/
+│   ├── model-lifecycle.md
+│   └── model-training-workflow.md
 ├── scripts/
 │   ├── generate_dummy_model.py
 │   ├── seed_training_data.py
@@ -170,6 +176,7 @@ The queue-event schema is shared between the HTTP ingestion endpoint and the app
 | Python queue library | `bullmq==3.3.4` |
 | Primary model | XGBoost |
 | Benchmark model | Random Forest |
+| Experiment tracking | MLflow |
 | Data processing | Pandas and NumPy |
 | Validation | Pydantic |
 | Testing | Pytest |
@@ -187,6 +194,7 @@ The queue-event schema is shared between the HTTP ingestion endpoint and the app
 - Docker and Docker Compose, if using containers
 - Access to a configured MongoDB instance
 - Access to Redis
+- Access to MLflow tracking server (default: `http://localhost:5000`)
 - Infisical CLI and authorized project access, if required by your environment
 
 For the BullMQ consumer, the development environment must also use the queue name and prefix agreed with the MERN team.
@@ -196,8 +204,8 @@ For the BullMQ consumer, the development environment must also use the queue nam
 ### 1. Clone the repository
 
 ```bash
-git clone <repository-url>
-cd spotq-eta-service
+git clone https://github.com/ACE-Program-Brototype/spotq-ml-eta-service.git
+cd spotq-ml-eta-service
 ```
 
 ### 2. Install dependencies
@@ -266,36 +274,58 @@ The Python package version is pinned separately in `pyproject.toml`. Cross-langu
 
 ---
 
-## ETA Machine Learning Pipeline
+## Automated ETA Model Training & Retraining Pipeline
 
-The bootstrap pipeline is implemented in three main scripts.
+- **Script:** `scripts/train_eta_model.py`
+- **Tracking Context:** `app/infrastructure/ml_models/tracking.py`
+- **Detailed Guide:** [`docs/model-training-workflow.md`](file:///Users/jeswin07/Documents/Data%20Science%20AI%20ML/Data%20Science%20Btype/SpotQ_ML/spotq-ml-eta-service/docs/model-training-workflow.md)
 
-| Script | Responsibility |
-|---|---|
-| `scripts/seed_training_data.py` | Generate reproducible synthetic queue records and seed MongoDB |
-| `scripts/train_eta_model.py` | Clean data, engineer features, evaluate baselines, and train an XGBoost candidate |
-| `scripts/prewarm_redis_history.py` | Calculate historical wait-time aggregates and write them to Redis |
+The automated training and retraining pipeline builds validated candidate model artifacts using historical completed queue outcomes from MongoDB. It operates completely out-of-band without disrupting active inference.
 
-The pipeline supports development and integration testing without requiring live restaurant traffic.
+### Core Pipeline Capabilities
 
-### Pipeline workflow
+1. **Historical Data Validation:** Pulls completed queue outcomes from MongoDB (`queue_events`), verifies required fields, timestamp chronology, non-negative wait durations $\le 120$ min, duration consistency, deduplication, and enforces a configurable `--min-sample-size` (default: 50).
+2. **Canonical 6-Feature Matrix:** Builds leakage-free feature vectors matching the real-time inference contract: `party_size`, `total_people_ahead`, `hour_of_day`, `day_of_week`, `is_weekend`, and `historical_average_wait`.
+3. **Chronological Evaluation & Hyperparameter Search:** Purged expanding-window cross-validation and chronological train/test split with embargo for in-flight queues. Tunes XGBoost via `RandomizedSearchCV` and benchmarks against training-median and historical-average baselines.
+4. **Candidate Eligibility Gates:** Configurable gates (`--max-test-mae`, `--max-test-rmse`, baseline outperformance). Guardrail strictly marks models trained on synthetic data as ineligible for production.
+5. **Contract-Safe Candidate Verification:** Serializes candidates to `app/infrastructure/ml_models/artifacts/candidates/eta_model_candidate.json`, reloads the booster, validates feature names, ordering, and count, checks metadata, and runs smoke inference without touching or overwriting the active production model.
+6. **MLflow Experiment Tracking:** Persistently logs run parameters, dataset provenance, metrics, code revision git SHA, tags, and candidate artifacts to the MLflow tracking server. Unhandled failures are explicitly recorded as `FAILED`.
 
-1. Generate synthetic queue records using a configurable seed.
-2. Insert records into the configured MongoDB collection using idempotent insertion logic.
-3. Validate timestamps, waiting times, party sizes, workload values, and duplicate identifiers.
-4. Build the canonical feature matrix using only historical information available at prediction time.
-5. Split the data chronologically and evaluate historical-average, Random Forest, and XGBoost models.
-6. Save the candidate model and training report.
-7. Aggregate historical waiting times by restaurant, weekday, and hour.
-8. Pre-warm Redis and generate a report describing the results.
+### Executing the Training & Retraining Pipeline
 
-### Inspect script options
-
+#### 1. Retrain on Historical Real Queue Data
 ```bash
-uv run python scripts/seed_training_data.py --help
-uv run python scripts/train_eta_model.py --help
-uv run python scripts/prewarm_redis_history.py --help
+uv run python -m scripts.train_eta_model \
+  --dataset-mode real \
+  --collection queue_events \
+  --min-sample-size 100 \
+  --max-test-mae 4.5 \
+  --max-test-rmse 7.5
 ```
+
+#### 2. Train on Synthetic Data (CI / Local Verification)
+```bash
+uv run python -m scripts.train_eta_model \
+  --dataset-mode synthetic \
+  --min-sample-size 50 \
+  --n-iter 12
+```
+
+### MLflow Experiment Tracking
+
+The pipeline automatically connects to the configured MLflow server (default: `http://localhost:5000`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MLFLOW_TRACKING_URI` | `http://localhost:5000` | MLflow tracking server endpoint |
+| `MLFLOW_EXPERIMENT_NAME` | `spotq-eta-service` | Experiment grouping for runs |
+
+Start MLflow locally using Docker Compose:
+```bash
+cd spotq-infra
+docker compose up -d mlflow
+```
+Access the tracking UI at `http://localhost:5000` to inspect candidate metrics, parameters, and model artifacts.
 
 ---
 
@@ -622,7 +652,7 @@ The following scenarios have been tested locally using a Python BullMQ producer 
 uv run pytest tests/unit -q
 ```
 
-The latest verified unit-test run completed with **100 passed** and two non-blocking warnings.
+The latest verified unit-test run completed with **130 passed** and four non-blocking warnings.
 
 ### Run the full test suite
 
@@ -652,7 +682,7 @@ uv run ruff check app/ scripts/ tests/
 git diff --check
 ```
 
-The latest SCRUM-1608 verification confirmed that Ruff and `git diff --check` pass, with all 100 unit tests passing.
+The latest SCRUM-1197 verification confirmed that Ruff, Black formatting, and `git diff --check` pass, with all 130 unit tests passing.
 
 ---
 
@@ -663,13 +693,13 @@ The repository includes a `Dockerfile` and `docker-compose.dev.yml`.
 ### Build the image
 
 ```bash
-docker build -t spotq-eta-service:latest .
+docker build -t spotq-ml-eta-service:latest .
 ```
 
 ### Run the API container
 
 ```bash
-docker run --rm -p 8000:8000 spotq-eta-service:latest
+docker run --rm -p 8000:8000 spotq-ml-eta-service:latest
 ```
 
 Supply the required configuration through the approved secret-management mechanism or runtime environment. Do not put service tokens directly in the README or commit them to source control.

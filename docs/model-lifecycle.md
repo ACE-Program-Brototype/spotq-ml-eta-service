@@ -51,3 +51,6 @@ This lifecycle capability covers startup validation, controlled model reload,
 rollback, health reporting, and operational metrics. It does not implement
 automated retraining, model promotion based on evaluation metrics, drift
 detection, or scheduled retraining.
+
+For candidate training, chronological evaluation, and MLflow experiment tracking,
+see [Model Training Workflow](model-training-workflow.md).

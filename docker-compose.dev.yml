@@ -23,6 +23,25 @@ services:
       timeout: 3s
       retries: 5
 
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.0
+    container_name: spotq-mlflow-dev
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    volumes:
+      - mlflow-dev-data:/mlflow
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   spotq-eta-service:
     build:
       context: .
@@ -40,8 +59,12 @@ services:
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB_NAME=spotq_eta_db
       - MODEL_PATH=app/infrastructure/ml_models/artifacts/candidates/eta_model_candidate.json
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
     depends_on:
       redis:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+
+volumes:
+  mlflow-dev-data:

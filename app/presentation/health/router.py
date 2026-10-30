@@ -58,6 +58,7 @@ async def readiness_check() -> JSONResponse:
     )
 
 
+@router.get("/health")
 @router.get("/healthz")
 async def health_check() -> JSONResponse:
     """Report detailed dependency status without exposing internal paths."""

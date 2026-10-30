@@ -1,5 +1,6 @@
 """Application entry point for spotq-eta-service."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Dict
 
@@ -18,6 +19,7 @@ from app.infrastructure.observability.metrics import (
     MONGO_HEALTH_GAUGE,
     REDIS_HEALTH_GAUGE,
 )
+from app.infrastructure.queue.bullmq_worker import create_queue_worker
 from app.presentation.health.router import router as health_router
 from app.presentation.admin.model_router import router as model_admin_router
 from app.presentation.predict.router import api_v1_router as eta_v1_router
@@ -68,10 +70,27 @@ async def lifespan(app: FastAPI):
             "SpotQ ETA service cannot start: no valid ETA model is available"
         )
 
+    worker = None
+    worker_task = None
+    try:
+        worker = await create_queue_worker()
+        worker_task = asyncio.create_task(worker.run())
+        logger.info("BullMQ queue consumer started in background")
+    except Exception as exc:
+        logger.warning("BullMQ worker startup deferred or failed", error=str(exc))
+
     try:
         yield
     finally:
         logger.info("Service shutting down")
+        if worker is not None:
+            try:
+                await worker.close()
+            except Exception as exc:
+                logger.warning("BullMQ worker cleanup failed", error=str(exc))
+        if worker_task is not None:
+            worker_task.cancel()
+
         REDIS_HEALTH_GAUGE.set(0.0)
         MONGO_HEALTH_GAUGE.set(0.0)
         MODEL_LOADED_GAUGE.set(0.0)
