@@ -71,7 +71,7 @@ class Settings(BaseSettings):
         description="Path to serialized XGBoost model artifact",
     )
     ALLOW_SYNTHETIC_MODEL: bool = Field(
-        default=False,
+        default=True,
         description="Allow a synthetic-data model for development only",
     )
 
@@ -79,6 +79,36 @@ class Settings(BaseSettings):
         default=None,
         min_length=32,
         description="Secret required to authorize model reload operations",
+    )
+
+    # S3 Artifact Storage & Model Registry (SCRUM-1228)
+    S3_BUCKET_NAME: Optional[str] = Field(
+        default=None,
+        description="S3 bucket storing versioned model artifacts",
+    )
+    S3_REGION: str = Field(
+        default="us-east-1",
+        description="AWS region for S3 artifact storage",
+    )
+    S3_ENDPOINT_URL: Optional[str] = Field(
+        default=None,
+        description="Custom S3 endpoint URL (e.g. MinIO, LocalStack)",
+    )
+    S3_ARTIFACT_PREFIX: str = Field(
+        default="models",
+        description="S3 key prefix for versioned ETA model artifacts",
+    )
+    AWS_ACCESS_KEY_ID: Optional[str] = Field(
+        default=None,
+        description="AWS access key ID (optional when using IAM roles)",
+    )
+    AWS_SECRET_ACCESS_KEY: Optional[str] = Field(
+        default=None,
+        description="AWS secret access key (optional when using IAM roles)",
+    )
+    S3_LOCAL_STORAGE_DIR: str = Field(
+        default="app/infrastructure/ml_models/artifacts/s3_storage",
+        description="Local directory for S3 artifact staging and offline fallback",
     )
 
 
