@@ -4,7 +4,7 @@ A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time pred
 
 The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, durable **S3 Artifact Storage & Model Registry**, SHA-256 integrity verification, authorized zero-downtime candidate promotion, instant rollback, reproducible ML bootstrap pipelines, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and a BullMQ consumer for completed queue events.
 
-> **Current status (SCRUM-1228):** Implemented **Model Registry, S3 Artifact Storage & Controlled Promotion**. Candidate artifacts are versioned in S3 with SHA-256 integrity verification. Pre-promotion validation guarantees contract parity and production safeguards. Authorized operators can promote candidates (`POST /api/v1/eta/admin/promote-candidate`) with atomic zero-downtime hot-swapping, and instantly restore previous versions (`POST /api/v1/eta/admin/rollback-model`) if needed. The baseline serving artifact (`eta_model_v1.json`) has been updated to canonical 6 features.
+> **Current status (SCRUM-1228):** Implemented **Model Registry, S3 Artifact Storage & Controlled Promotion**. Candidate artifacts are versioned in S3 with SHA-256 integrity verification. Pre-promotion validation guarantees contract parity and production safeguards. Authorized operators can promote candidates (`POST /api/v1/eta/admin/promote-candidate`) with atomic zero-downtime hot-swapping, and instantly restore previous versions (`POST /api/v1/eta/admin/rollback-model`) if needed. The repository is free of committed model binaries; the service automatically bootstraps and validates verified model artifacts directly from AWS S3 upon startup.
 
 ---
 
@@ -340,7 +340,7 @@ SCRUM-1228 implements secure S3 artifact storage, versioned metadata manifests, 
 
 ### Key Capabilities
 
-1. **S3 Artifact Storage**: Stores candidate models in S3 (`s3://<bucket>/models/<version>/eta_model.json`) with companion `manifest.json`. Automatically falls back to local staging directory (`S3_LOCAL_STORAGE_DIR`) in offline/dev environments.
+1. **S3 Artifact Storage**: Stores candidate models in S3 (`s3://<bucket>/ml-models/eta/<version>/eta_model.json`) with companion `manifest.json`. Automatically bootstraps from S3 on initial startup if local model file is absent, and falls back to local staging directory (`S3_LOCAL_STORAGE_DIR`) in offline/dev environments.
 2. **SHA-256 Checksum Verification**: Every artifact is fingerprinted with a SHA-256 digest on upload and verified upon download. Corrupted downloads are rejected and discarded immediately (`HTTP 422`).
 3. **Pre-Promotion Validation Gate**: Isolated validation checks booster loading, 6 canonical features, environment policy (`synthetic` blocked in production), and smoke test inference before activation.
 4. **Authorized Atomic Hot-Swap**: Authorized operators (`X-Admin-Key`) promote candidates via `POST /api/v1/eta/admin/promote-candidate`. Model swap in memory is guarded by an `RLock` for zero-downtime activation. If promotion fails, the active model is 100% preserved.
@@ -350,11 +350,16 @@ SCRUM-1228 implements secure S3 artifact storage, versioned metadata manifests, 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `S3_BUCKET_NAME` | `None` (local fallback) | S3 bucket storing candidate models |
-| `S3_REGION` | `us-east-1` | AWS region |
-| `S3_ARTIFACT_PREFIX` | `models` | S3 key prefix |
+| `AWS_S3_BUCKET` / `S3_BUCKET_NAME` | `spotq-restaurant-files` | S3 bucket storing candidate models |
+| `AWS_REGION` / `S3_REGION` | `ap-south-1` | AWS region |
+| `S3_ARTIFACT_PREFIX` | `ml-models/eta` | S3 key prefix |
 | `S3_ENDPOINT_URL` | `None` | Custom S3 endpoint URL (MinIO / LocalStack) |
 | `ETA_MODEL_ADMIN_KEY` | `None` | Minimum 32-character secret authorizing admin promotion/rollback |
+
+### Verification Scripts
+
+- **`scripts/verify_s3_storage.py`**: Verifies S3 connection, upload, download, SHA-256 integrity verification, and cleanup.
+- **`scripts/test_full_mlops_pipeline.py`**: Runs end-to-end promotion, status check, live prediction, and rollback against S3.
 
 ---
 
