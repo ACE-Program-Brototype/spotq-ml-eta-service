@@ -146,6 +146,39 @@ class ModelLoader:
         started = perf_counter()
         model_path = Path(settings.MODEL_PATH)
 
+        if not model_path.is_file():
+            # Attempt to bootstrap from S3 storage if remote is configured
+            try:
+                from app.infrastructure.storage.s3_storage import s3_storage
+
+                if s3_storage.is_remote:
+                    candidates = s3_storage.list_candidates()
+                    if candidates:
+                        # Find matching version or pick the latest candidate
+                        chosen = None
+                        for c in candidates:
+                            if c.model_version == model_path.stem:
+                                chosen = c
+                                break
+                        target = chosen or candidates[0]
+                        cache_dir = Path("app/infrastructure/ml_models/artifacts/s3_storage")
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        downloaded_file, manifest = s3_storage.download_candidate(
+                            target.model_version, cache_dir
+                        )
+                        model_path = downloaded_file
+                        logger.info(
+                            "Bootstrapped model artifact from S3 registry",
+                            model_version=target.model_version,
+                            s3_uri=manifest.s3_uri,
+                            checksum_sha256=manifest.checksum_sha256,
+                        )
+            except Exception as bootstrap_exc:
+                logger.warning(
+                    "S3 model bootstrap failed; falling back to local file load",
+                    error=str(bootstrap_exc),
+                )
+
         try:
             candidate, candidate_status, version, dataset_mode = (
                 self._load_candidate(model_path)
