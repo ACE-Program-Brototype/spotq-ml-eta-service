@@ -26,6 +26,16 @@ def setup_admin_env(monkeypatch, tmp_path):
     monkeypatch.setattr(s3_storage, "bucket_name", None)
     monkeypatch.setattr(s3_storage, "_s3_client", None)
     monkeypatch.setattr(s3_storage, "local_dir", storage_dir)
+
+    # Initialize a clean baseline model in tmp_path
+    baseline_path = tmp_path / "baseline_model.json"
+    X = np.asarray([[1.0, 0.0, 12.0, 0.0, 0.0, 20.0]], dtype=np.float32)
+    y = np.asarray([15.0], dtype=np.float32)
+    dtrain = xgb.DMatrix(X, label=y, feature_names=list(FEATURE_NAMES))
+    booster = xgb.train({"objective": "reg:squarederror"}, dtrain, num_boost_round=1)
+    booster.set_attr(dataset_mode="synthetic", model_version="baseline_v1")
+    booster.save_model(str(baseline_path))
+    monkeypatch.setattr(settings, "MODEL_PATH", str(baseline_path))
     model_loader.load_model()
 
 

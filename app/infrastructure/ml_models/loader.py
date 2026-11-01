@@ -146,7 +146,12 @@ class ModelLoader:
         started = perf_counter()
         model_path = Path(settings.MODEL_PATH)
 
-        if not model_path.is_file():
+        if (
+            not is_reload
+            and self.booster is None
+            and not model_path.is_file()
+            and settings.ENVIRONMENT != EnvironmentType.TESTING
+        ):
             # Attempt to bootstrap from S3 storage if remote is configured
             try:
                 from app.infrastructure.storage.s3_storage import s3_storage
