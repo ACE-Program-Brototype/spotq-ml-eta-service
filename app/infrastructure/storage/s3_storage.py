@@ -10,7 +10,7 @@ from typing import Any, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from app.infrastructure.config.settings import settings
+from app.infrastructure.config.settings import EnvironmentType, settings
 from app.infrastructure.logging.logger import logger
 from app.infrastructure.ml_models.registry import ModelManifest
 
@@ -70,7 +70,12 @@ class S3ModelStorage:
         prefix: Optional[str] = None,
         local_dir: Optional[Path] = None,
     ) -> None:
-        self.bucket_name = bucket_name or settings.S3_BUCKET_NAME
+        if bucket_name is not None:
+            self.bucket_name = bucket_name if bucket_name else None
+        elif settings.ENVIRONMENT == EnvironmentType.TESTING:
+            self.bucket_name = None
+        else:
+            self.bucket_name = settings.S3_BUCKET_NAME
         self.region = region or settings.S3_REGION
         self.endpoint_url = endpoint_url or settings.S3_ENDPOINT_URL
         self.prefix = (prefix or settings.S3_ARTIFACT_PREFIX).strip("/")

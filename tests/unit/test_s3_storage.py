@@ -70,7 +70,7 @@ def test_storage_upload_and_download_roundtrip(tmp_path: Path, sample_model_file
 
 def test_download_rejects_corrupted_artifact(tmp_path: Path, sample_model_file: Path):
     storage_dir = tmp_path / "storage"
-    storage = S3ModelStorage(local_dir=storage_dir)
+    storage = S3ModelStorage(bucket_name="", local_dir=storage_dir)
 
     storage.upload_candidate(
         model_version="v2.0.0",
@@ -78,7 +78,7 @@ def test_download_rejects_corrupted_artifact(tmp_path: Path, sample_model_file: 
     )
 
     # Intentionally corrupt the stored file
-    stored_file = storage_dir / "models" / "v2.0.0" / "eta_model.json"
+    stored_file = storage_dir / storage.prefix / "v2.0.0" / "eta_model.json"
     stored_file.write_text("CORRUPTED_PAYLOAD_BITS", encoding="utf-8")
 
     staging_dir = tmp_path / "staging"
@@ -128,6 +128,6 @@ def test_remote_s3_upload_and_download(tmp_path: Path, sample_model_file: Path):
         model_version="v3.0.0",
         model_file_path=sample_model_file,
     )
-    assert manifest.s3_uri == "s3://spotq-test-bucket/models/v3.0.0/eta_model.json"
+    assert manifest.s3_uri == f"s3://spotq-test-bucket/{storage.prefix}/v3.0.0/eta_model.json"
     assert mock_s3.upload_file.called
     assert mock_s3.put_object.called

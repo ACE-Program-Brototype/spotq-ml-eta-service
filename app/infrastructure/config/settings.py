@@ -2,7 +2,7 @@
 
 from enum import Enum
 from typing import Optional
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
@@ -84,10 +84,12 @@ class Settings(BaseSettings):
     # S3 Artifact Storage & Model Registry (SCRUM-1228)
     S3_BUCKET_NAME: Optional[str] = Field(
         default=None,
+        validation_alias=AliasChoices("S3_BUCKET_NAME", "AWS_S3_BUCKET"),
         description="S3 bucket storing versioned model artifacts",
     )
     S3_REGION: str = Field(
-        default="us-east-1",
+        default="ap-south-1",
+        validation_alias=AliasChoices("S3_REGION", "AWS_REGION"),
         description="AWS region for S3 artifact storage",
     )
     S3_ENDPOINT_URL: Optional[str] = Field(
@@ -95,7 +97,7 @@ class Settings(BaseSettings):
         description="Custom S3 endpoint URL (e.g. MinIO, LocalStack)",
     )
     S3_ARTIFACT_PREFIX: str = Field(
-        default="models",
+        default="ml-models/eta",
         description="S3 key prefix for versioned ETA model artifacts",
     )
     AWS_ACCESS_KEY_ID: Optional[str] = Field(

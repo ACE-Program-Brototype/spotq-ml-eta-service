@@ -17,10 +17,15 @@ ADMIN_KEY = "k" * 32
 
 
 @pytest.fixture(autouse=True)
-def setup_admin_env(monkeypatch):
-    """Ensure admin key and synthetic model flag are enabled for tests."""
+def setup_admin_env(monkeypatch, tmp_path):
+    """Ensure admin key, synthetic model flag, and local storage adapter are enabled for tests."""
     monkeypatch.setattr(settings, "ETA_MODEL_ADMIN_KEY", ADMIN_KEY)
     monkeypatch.setattr(settings, "ALLOW_SYNTHETIC_MODEL", True)
+    storage_dir = tmp_path / "s3_local_storage"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(s3_storage, "bucket_name", None)
+    monkeypatch.setattr(s3_storage, "_s3_client", None)
+    monkeypatch.setattr(s3_storage, "local_dir", storage_dir)
     model_loader.load_model()
 
 
