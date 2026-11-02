@@ -1,11 +1,11 @@
 """Load, validate, and manage the active XGBoost ETA model."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter
-from typing import Literal
-from dataclasses import dataclass
 from threading import RLock
+from time import perf_counter
+from typing import Any, Literal
 
 import numpy as np
 import xgboost as xgb
@@ -36,6 +36,8 @@ class ModelSnapshot:
     artifact_id: str | None
     loaded_at: str | None
     failure_reason: str | None
+    checksum_sha256: str | None = None
+    dataset_mode: str | None = None
 
 class ModelLoader:
     """Manage a validated model and retain the last known-good version."""
@@ -50,15 +52,23 @@ class ModelLoader:
         self.model_version: str | None = None
         self.artifact_id: str | None = None
         self.loaded_at: str | None = None
+        self.dataset_mode: str | None = None
+        self.manifest: Any | None = None
         self.previous_booster: xgb.Booster | None = None
         self.previous_model_version: str | None = None
         self.previous_artifact_id: str | None = None
         self.previous_loaded_at: str | None = None
         self.previous_status: ModelStatus | None = None
+        self.previous_dataset_mode: str | None = None
+        self.previous_manifest: Any | None = None
 
     def get_snapshot(self) -> ModelSnapshot:
         """Return active model metadata from one consistent state."""
         with self._lock:
+            checksum = (
+                self.manifest.checksum_sha256 if hasattr(self.manifest, "checksum_sha256")
+                else None
+            )
             return ModelSnapshot(
                 booster=self.booster,
                 status=self.status,
@@ -66,6 +76,8 @@ class ModelLoader:
                 artifact_id=self.artifact_id,
                 loaded_at=self.loaded_at,
                 failure_reason=self.failure_reason,
+                checksum_sha256=checksum,
+                dataset_mode=self.dataset_mode,
             )
 
     def _load_candidate(
@@ -134,6 +146,44 @@ class ModelLoader:
         started = perf_counter()
         model_path = Path(settings.MODEL_PATH)
 
+        if (
+            not is_reload
+            and self.booster is None
+            and not model_path.is_file()
+            and settings.ENVIRONMENT != EnvironmentType.TESTING
+        ):
+            # Attempt to bootstrap from S3 storage if remote is configured
+            try:
+                from app.infrastructure.storage.s3_storage import s3_storage
+
+                if s3_storage.is_remote:
+                    candidates = s3_storage.list_candidates()
+                    if candidates:
+                        # Find matching version or pick the latest candidate
+                        chosen = None
+                        for c in candidates:
+                            if c.model_version == model_path.stem:
+                                chosen = c
+                                break
+                        target = chosen or candidates[0]
+                        cache_dir = Path("app/infrastructure/ml_models/artifacts/s3_storage")
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        downloaded_file, manifest = s3_storage.download_candidate(
+                            target.model_version, cache_dir
+                        )
+                        model_path = downloaded_file
+                        logger.info(
+                            "Bootstrapped model artifact from S3 registry",
+                            model_version=target.model_version,
+                            s3_uri=manifest.s3_uri,
+                            checksum_sha256=manifest.checksum_sha256,
+                        )
+            except Exception as bootstrap_exc:
+                logger.warning(
+                    "S3 model bootstrap failed; falling back to local file load",
+                    error=str(bootstrap_exc),
+                )
+
         try:
             candidate, candidate_status, version, dataset_mode = (
                 self._load_candidate(model_path)
@@ -182,6 +232,7 @@ class ModelLoader:
             self.model_version = version
             self.artifact_id = model_path.name
             self.loaded_at = loaded_at
+            self.dataset_mode = dataset_mode
             self.failure_reason = None
             self.last_reload_error = None
 
@@ -200,7 +251,65 @@ class ModelLoader:
         )
         return True
 
+    def activate_candidate(
+        self,
+        candidate_path: Path,
+        manifest: Any | None = None,
+    ) -> bool:
+        """Atomically activate a validated S3 candidate artifact.
 
+        Preserves the previous model for instant rollback on failure or operator request.
+        """
+        started = perf_counter()
+        try:
+            candidate, candidate_status, version, dataset_mode = (
+                self._load_candidate(candidate_path)
+            )
+        except Exception as exc:
+            MODEL_RELOAD_FAILURE_TOTAL.inc()
+            with self._lock:
+                self.last_reload_error = str(exc)
+            logger.error(
+                "Candidate model activation failed; active model preserved",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return False
+        finally:
+            duration = perf_counter() - started
+            MODEL_RELOAD_DURATION.observe(duration)
+
+        loaded_at = datetime.now(timezone.utc).isoformat()
+        target_version = manifest.model_version if manifest else version
+
+        with self._lock:
+            if self.booster is not None:
+                self.previous_booster = self.booster
+                self.previous_model_version = self.model_version
+                self.previous_artifact_id = self.artifact_id
+                self.previous_loaded_at = self.loaded_at
+                self.previous_status = self.status
+                self.previous_dataset_mode = self.dataset_mode
+                self.previous_manifest = self.manifest
+
+            self.booster = candidate
+            self.status = candidate_status
+            self.model_version = target_version
+            self.artifact_id = candidate_path.name
+            self.loaded_at = loaded_at
+            self.dataset_mode = dataset_mode
+            self.manifest = manifest
+            self.failure_reason = None
+            self.last_reload_error = None
+
+        MODEL_RELOAD_SUCCESS_TOTAL.inc()
+        logger.info(
+            "Candidate model activated as live production model",
+            model_version=target_version,
+            artifact_id=candidate_path.name,
+            dataset_mode=dataset_mode,
+        )
+        return True
 
     def rollback_model(self) -> bool:
         """Reactivate the previous known-good model atomically."""
@@ -214,6 +323,8 @@ class ModelLoader:
                 self.artifact_id,
                 self.loaded_at,
                 self.status,
+                self.dataset_mode,
+                self.manifest,
             )
 
             (
@@ -222,12 +333,16 @@ class ModelLoader:
                 self.artifact_id,
                 self.loaded_at,
                 self.status,
+                self.dataset_mode,
+                self.manifest,
             ) = (
                 self.previous_booster,
                 self.previous_model_version,
                 self.previous_artifact_id,
                 self.previous_loaded_at,
                 self.previous_status or "loaded",
+                self.previous_dataset_mode,
+                self.previous_manifest,
             )
 
             (
@@ -236,6 +351,8 @@ class ModelLoader:
                 self.previous_artifact_id,
                 self.previous_loaded_at,
                 self.previous_status,
+                self.previous_dataset_mode,
+                self.previous_manifest,
             ) = current
 
             self.failure_reason = None
@@ -253,14 +370,16 @@ class ModelLoader:
         """Return whether a compatible model is loaded and permitted to serve."""
         snapshot = self.get_snapshot()
 
-        if snapshot.booster is None:
-            return False
+        booster = getattr(snapshot, "booster", None)
+        status_val = getattr(snapshot, "status", None)
+        if booster is None:
+            return status_val in ("loaded", "loaded_synthetic")
 
-        if snapshot.status == "loaded":
+        if status_val == "loaded":
             return True
 
         return (
-            snapshot.status == "loaded_synthetic"
+            status_val == "loaded_synthetic"
             and settings.ENVIRONMENT == EnvironmentType.DEVELOPMENT
             and settings.ALLOW_SYNTHETIC_MODEL
         )

@@ -102,6 +102,26 @@ MODEL_LOAD_DURATION = _get_or_create_histogram(
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
 )
 
+MODEL_PROMOTION_SUCCESS_TOTAL = _get_or_create_counter(
+    "spotq_model_promotion_success_total",
+    "Total successful authorized candidate model promotions",
+)
+
+MODEL_PROMOTION_FAILURE_TOTAL = _get_or_create_counter(
+    "spotq_model_promotion_failure_total",
+    "Total failed candidate model promotion attempts",
+)
+
+MODEL_ROLLBACK_SUCCESS_TOTAL = _get_or_create_counter(
+    "spotq_model_rollback_success_total",
+    "Total successful model rollbacks to previous version",
+)
+
+MODEL_ROLLBACK_FAILURE_TOTAL = _get_or_create_counter(
+    "spotq_model_rollback_failure_total",
+    "Total failed model rollback attempts",
+)
+
 ETA_INFERENCE_FAILURE_TOTAL = _get_or_create_counter(
     "spotq_eta_inference_failure_total",
     "ETA prediction failures during model inference",

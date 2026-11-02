@@ -26,16 +26,19 @@ env/
 .coverage
 htmlcov/
 
-# Local Model Artifacts (Never commit binaries)
+# Local Model Artifacts (Never commit binaries or model artifacts)
 *.joblib
 *.pkl
 *.json.model
+app/infrastructure/ml_models/artifacts/*.json
+!app/infrastructure/ml_models/artifacts/.gitkeep
 
 Development Protection.json
 Main Protection.json
 Staging Protection.json
 # Generated ETA model candidates and training reports
 app/infrastructure/ml_models/artifacts/candidates/
+app/infrastructure/ml_models/artifacts/s3_storage/
 
 # MLflow local tracking & runs
 mlruns/

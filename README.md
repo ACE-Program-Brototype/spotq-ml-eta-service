@@ -2,9 +2,9 @@
 
 A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time prediction. SpotQ ETA uses XGBoost model artifacts, MongoDB for queue data, and Redis for historical waiting-time features and asynchronous event processing.
 
-The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, reproducible machine-learning bootstrap pipeline, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and a BullMQ consumer for completed queue events.
+The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, durable **S3 Artifact Storage & Model Registry**, SHA-256 integrity verification, authorized zero-downtime candidate promotion, instant rollback, reproducible ML bootstrap pipelines, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and a BullMQ consumer for completed queue events.
 
-> **Current status (SCRUM-1197):** Implemented the **Automated ETA Model Training & Retraining Pipeline** using validated historical queue outcomes from MongoDB, MLflow experiment tracking with persistent run metadata, candidate eligibility thresholds (MAE/RMSE gates, baseline improvement, synthetic data safeguards), and contract-safe candidate verification without overwriting or disrupting the active production model. Ingestion via the BullMQ consumer (`ml-eta-queue`) feeds continuous retraining datasets.
+> **Current status (SCRUM-1228):** Implemented **Model Registry, S3 Artifact Storage & Controlled Promotion**. Candidate artifacts are versioned in S3 with SHA-256 integrity verification. Pre-promotion validation guarantees contract parity and production safeguards. Authorized operators can promote candidates (`POST /api/v1/eta/admin/promote-candidate`) with atomic zero-downtime hot-swapping, and instantly restore previous versions (`POST /api/v1/eta/admin/rollback-model`) if needed. The repository is free of committed model binaries; the service automatically bootstraps and validates verified model artifacts directly from AWS S3 upon startup.
 
 ---
 
@@ -17,6 +17,7 @@ The service follows Clean Architecture principles and includes an **Automated ET
 - [Local Setup](#local-setup)
 - [Configuration and Secrets](#configuration-and-secrets)
 - [Automated ETA Model Training & Retraining Pipeline](#automated-eta-model-training--retraining-pipeline)
+- [S3 Model Registry & Controlled Promotion](#s3-model-registry--controlled-promotion)
 - [Synthetic Data Generation](#synthetic-data-generation)
 - [Data Cleaning and Feature Engineering](#data-cleaning-and-feature-engineering)
 - [Model Training and Evaluation](#model-training-and-evaluation)
@@ -177,6 +178,7 @@ The queue-event schema is shared between the HTTP ingestion endpoint and the app
 | Primary model | XGBoost |
 | Benchmark model | Random Forest |
 | Experiment tracking | MLflow |
+| Model artifact storage | AWS S3 / Boto3 with SHA-256 integrity verification |
 | Data processing | Pandas and NumPy |
 | Validation | Pydantic |
 | Testing | Pytest |
@@ -326,6 +328,38 @@ cd spotq-infra
 docker compose up -d mlflow
 ```
 Access the tracking UI at `http://localhost:5000` to inspect candidate metrics, parameters, and model artifacts.
+
+---
+
+## S3 Model Registry & Controlled Promotion
+
+- **Guide:** [`docs/model-lifecycle.md`](file:///Users/jeswin07/Documents/Data%20Science%20AI%20ML/Data%20Science%20Btype/SpotQ_ML/spotq-ml-eta-service/docs/model-lifecycle.md)
+- **Endpoints:** `POST /api/v1/eta/admin/promote-candidate`, `POST /api/v1/eta/admin/rollback-model`
+
+SCRUM-1228 implements secure S3 artifact storage, versioned metadata manifests, SHA-256 integrity checks, and controlled promotion of candidate models to live inference serving without downtime.
+
+### Key Capabilities
+
+1. **S3 Artifact Storage**: Stores candidate models in S3 (`s3://<bucket>/ml-models/eta/<version>/eta_model.json`) with companion `manifest.json`. Automatically bootstraps from S3 on initial startup if local model file is absent, and falls back to local staging directory (`S3_LOCAL_STORAGE_DIR`) in offline/dev environments.
+2. **SHA-256 Checksum Verification**: Every artifact is fingerprinted with a SHA-256 digest on upload and verified upon download. Corrupted downloads are rejected and discarded immediately (`HTTP 422`).
+3. **Pre-Promotion Validation Gate**: Isolated validation checks booster loading, 6 canonical features, environment policy (`synthetic` blocked in production), and smoke test inference before activation.
+4. **Authorized Atomic Hot-Swap**: Authorized operators (`X-Admin-Key`) promote candidates via `POST /api/v1/eta/admin/promote-candidate`. Model swap in memory is guarded by an `RLock` for zero-downtime activation. If promotion fails, the active model is 100% preserved.
+5. **Instant Rollback**: Calling `POST /api/v1/eta/admin/rollback-model` restores the previous known-good model version in sub-millisecond time.
+
+### S3 Configuration Options
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AWS_S3_BUCKET` / `S3_BUCKET_NAME` | `spotq-restaurant-files` | S3 bucket storing candidate models |
+| `AWS_REGION` / `S3_REGION` | `ap-south-1` | AWS region |
+| `S3_ARTIFACT_PREFIX` | `ml-models/eta` | S3 key prefix |
+| `S3_ENDPOINT_URL` | `None` | Custom S3 endpoint URL (MinIO / LocalStack) |
+| `ETA_MODEL_ADMIN_KEY` | `None` | Minimum 32-character secret authorizing admin promotion/rollback |
+
+### Verification Scripts
+
+- **`scripts/verify_s3_storage.py`**: Verifies S3 connection, upload, download, SHA-256 integrity verification, and cleanup.
+- **`scripts/test_full_mlops_pipeline.py`**: Runs end-to-end promotion, status check, live prediction, and rollback against S3.
 
 ---
 
@@ -652,7 +686,7 @@ The following scenarios have been tested locally using a Python BullMQ producer 
 uv run pytest tests/unit -q
 ```
 
-The latest verified unit-test run completed with **130 passed** and four non-blocking warnings.
+The latest verified unit-test run completed with **147 passed** and zero warnings.
 
 ### Run the full test suite
 
@@ -682,7 +716,7 @@ uv run ruff check app/ scripts/ tests/
 git diff --check
 ```
 
-The latest SCRUM-1197 verification confirmed that Ruff, Black formatting, and `git diff --check` pass, with all 130 unit tests passing.
+The latest SCRUM-1228 verification confirmed that Ruff, Black formatting, and `git diff --check` pass, with all 147 unit tests passing.
 
 ---
 

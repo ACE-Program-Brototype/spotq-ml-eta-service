@@ -5,7 +5,7 @@ import time
 
 import redis.asyncio as aioredis
 
-from app.infrastructure.config.settings import settings
+from app.infrastructure.config.settings import EnvironmentType, settings
 from app.infrastructure.logging.logger import logger
 
 
@@ -17,38 +17,48 @@ class RedisManager:
 
     async def connect(self) -> None:
         """Initialize the Redis connection pool and verify connectivity."""
-        try:
-            redis_options = {
-                "host": settings.REDIS_HOST,
-                "port": settings.REDIS_PORT,
-                "decode_responses": True,
-            }
+        hosts_to_try = [settings.REDIS_HOST]
+        if (
+            settings.REDIS_HOST not in {"localhost", "127.0.0.1"}
+            and settings.ENVIRONMENT != EnvironmentType.PRODUCTION
+        ):
+            hosts_to_try.append("localhost")
 
-            if settings.REDIS_PASSWORD:
-                redis_options["password"] = settings.REDIS_PASSWORD
-                if settings.REDIS_USERNAME:
-                    redis_options["username"] = settings.REDIS_USERNAME
+        last_exc: Exception | None = None
+        for host in hosts_to_try:
+            try:
+                redis_options = {
+                    "host": host,
+                    "port": settings.REDIS_PORT,
+                    "decode_responses": True,
+                }
 
-            self.client = aioredis.Redis(**redis_options)
-            await self.client.ping()
+                if settings.REDIS_PASSWORD:
+                    redis_options["password"] = settings.REDIS_PASSWORD
+                    if settings.REDIS_USERNAME:
+                        redis_options["username"] = settings.REDIS_USERNAME
 
-            logger.info(
-                "Connected to Redis feature store",
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-            )
+                self.client = aioredis.Redis(**redis_options)
+                await self.client.ping()
 
-        except Exception as exc:
-            logger.error(
-                "Unable to connect to Redis feature store",
-                error=str(exc),
-            )
+                logger.info(
+                    "Connected to Redis feature store",
+                    host=host,
+                    port=settings.REDIS_PORT,
+                )
+                return
+            except Exception as exc:
+                last_exc = exc
+                if self.client is not None:
+                    await self.client.aclose()
+                    self.client = None
 
-            if self.client is not None:
-                await self.client.aclose()
-                self.client = None
-
-            raise
+        logger.error(
+            "Unable to connect to Redis feature store",
+            error=str(last_exc),
+        )
+        if last_exc:
+            raise last_exc
 
     async def disconnect(self) -> None:
         """Close the Redis connection pool gracefully."""

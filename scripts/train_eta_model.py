@@ -36,6 +36,7 @@ from app.infrastructure.ml_models.tracking import (
     MLflowTracker,
     evaluate_candidate_eligibility,
 )
+from app.infrastructure.storage.s3_storage import s3_storage
 
 
 class InsufficientDataError(ValueError):
@@ -543,9 +544,31 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
             candidate_path, expected_dataset_mode=args.dataset_mode
         )
 
+        # Register candidate in S3 artifact storage with SHA-256 integrity digest (SCRUM-1228)
+        storage_manifest = None
+        if not getattr(args, "skip_s3_registration", False):
+            version_tag = f"candidate-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            try:
+                storage_manifest = s3_storage.upload_candidate(
+                    model_version=version_tag,
+                    model_file_path=candidate_path,
+                    dataset_mode=args.dataset_mode,
+                    metrics=metrics,
+                    mlflow_run_id=tracker.run_id,
+                    is_eligible=eligibility.is_eligible,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "S3 candidate registration deferred or failed", error=str(exc)
+                )
+
         report = {
             "model_metadata": {
-                "model_version": "eta_model_candidate",
+                "model_version": (
+                    storage_manifest.model_version
+                    if storage_manifest
+                    else "eta_model_candidate"
+                ),
                 "artifact_format": "xgboost_json",
                 "feature_contract_version": "v1",
                 "training_timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -553,6 +576,10 @@ async def run_training(args: argparse.Namespace) -> dict[str, Any]:
                 "dataset_mode": args.dataset_mode,
                 "is_synthetic": args.dataset_mode == "synthetic",
                 "mlflow_run_id": tracker.run_id,
+                "checksum_sha256": (
+                    storage_manifest.checksum_sha256 if storage_manifest else None
+                ),
+                "s3_uri": storage_manifest.s3_uri if storage_manifest else None,
             },
             "status": "candidate_trained",
             "dataset_mode": args.dataset_mode,
@@ -746,6 +773,12 @@ def parse_args(args_list: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("app/infrastructure/ml_models/artifacts/candidates"),
+    )
+    parser.add_argument(
+        "--skip-s3-registration",
+        action="store_true",
+        default=False,
+        help="Skip registering candidate in S3 storage / local registry.",
     )
     return parser.parse_args(args_list)
 
