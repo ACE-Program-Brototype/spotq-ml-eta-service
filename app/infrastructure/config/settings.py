@@ -129,7 +129,45 @@ class Settings(BaseSettings):
     ETA_MIN_WAIT_MINUTES: float = Field(default=1.0, gt=0, le=120)
     ETA_MAX_WAIT_MINUTES: float = Field(default=120.0, gt=0, le=120)
 
-    # BullMQ event consumer
+    # RabbitMQ Event Integration (SCRUM-1257)
+    RABBITMQ_URL: str = Field(
+        default="amqp://guest:guest@localhost:5672/",
+        description="RabbitMQ connection URL",
+    )
+    RABBITMQ_HOST: str = Field(
+        default="localhost",
+        description="RabbitMQ broker host address",
+    )
+    RABBITMQ_PORT: int = Field(default=5672, description="RabbitMQ broker AMQP port")
+    RABBITMQ_USER: str = Field(default="guest", description="RabbitMQ username")
+    RABBITMQ_PASSWORD: str = Field(default="guest", description="RabbitMQ password")
+    RABBITMQ_VHOST: str = Field(default="/", description="RabbitMQ virtual host")
+    RABBITMQ_QUEUE_NAME: str = Field(
+        default="ml-eta-queue",
+        description="RabbitMQ queue name for ETA queue events",
+    )
+    RABBITMQ_EXCHANGE_NAME: str = Field(
+        default="spotq.events",
+        description="RabbitMQ exchange name for queue events",
+    )
+    RABBITMQ_ROUTING_KEY: str = Field(
+        default="queue.event.completed",
+        description="Routing key pattern for completed queue events",
+    )
+    RABBITMQ_PREFETCH_COUNT: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="RabbitMQ prefetch count (unacknowledged messages per consumer)",
+    )
+    RABBITMQ_RECONNECT_INTERVAL_SECONDS: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=60.0,
+        description="Seconds to wait before reconnecting to RabbitMQ broker",
+    )
+
+    # BullMQ event consumer (legacy / migration)
     BULLMQ_QUEUE_NAME: str = Field(
         default="ml-eta-queue",
         description="BullMQ queue used by the MERN producer",

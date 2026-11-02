@@ -28,7 +28,7 @@ def mongo_collection(monkeypatch):
     """Mock the MongoDB database and queue-events collection."""
     collection = MagicMock()
     collection.insert_one = AsyncMock()
-    collection.find_one = AsyncMock()
+    collection.find_one = AsyncMock(return_value=None)
 
     database = MagicMock()
     database.__getitem__.return_value = collection
@@ -205,3 +205,18 @@ async def test_index_creation_fails_if_mongodb_unavailable(monkeypatch):
 
     with pytest.raises(RuntimeError, match="MongoDB is unavailable"):
         await processor.ensure_queue_event_indexes()
+
+
+@pytest.mark.asyncio
+async def test_event_without_actual_wait_time_auto_calculates_and_persists(
+    event_data, mongo_collection
+):
+    """Auto-calculate actual_wait_time_minutes when omitted by MERN producer."""
+    del event_data["actual_wait_time_minutes"]
+    result = await processor.process_queue_event(event_data)
+
+    assert result["status"] == "persisted"
+    persisted_doc = mongo_collection.insert_one.call_args[0][0]
+    # 12:00:00 to 12:10:00 is exactly 10.0 minutes
+    assert persisted_doc["actual_wait_time_minutes"] == 10.0
+
