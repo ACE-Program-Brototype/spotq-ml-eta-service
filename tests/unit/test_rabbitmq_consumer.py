@@ -171,3 +171,4 @@ def test_rabbitmq_localhost_fallback_in_development():
     urls = consumer._get_connection_urls_to_try()
     assert "amqp://guest:guest@rabbitmq:5672/" in urls
     assert "amqp://guest:guest@localhost:5672/" in urls
+

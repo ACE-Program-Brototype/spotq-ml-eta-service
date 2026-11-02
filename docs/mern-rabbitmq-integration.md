@@ -188,3 +188,4 @@ Two helper scripts are provided in `scripts/`:
    ```bash
    uv run python scripts/verify_rabbitmq_integration.py
    ```
+

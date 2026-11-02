@@ -88,8 +88,12 @@ async def lifespan(app: FastAPI):
                 await rabbitmq_consumer.close()
             except Exception as exc:
                 logger.warning("RabbitMQ consumer cleanup failed", error=str(exc))
-        if consumer_task is not None:
+        if consumer_task is not None and not consumer_task.done():
             consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                pass
 
         REDIS_HEALTH_GAUGE.set(0.0)
         MONGO_HEALTH_GAUGE.set(0.0)

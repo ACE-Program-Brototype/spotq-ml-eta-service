@@ -179,3 +179,4 @@ async def cleanup(consumer: RabbitMQConsumer):
 if __name__ == "__main__":
     success = asyncio.run(run_rabbitmq_verification())
     sys.exit(0 if success else 1)
+

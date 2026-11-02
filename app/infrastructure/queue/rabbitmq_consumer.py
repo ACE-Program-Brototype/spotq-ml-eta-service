@@ -92,6 +92,12 @@ class RabbitMQConsumer:
 
     async def connect(self) -> None:
         """Connect to RabbitMQ broker and declare topology (Exchanges, Queues, DLQ)."""
+        if self._connection and not self._connection.is_closed:
+            try:
+                await self._connection.close()
+            except Exception:
+                pass
+
         urls_to_try = self._get_connection_urls_to_try()
         last_error = None
 
@@ -275,7 +281,7 @@ class RabbitMQConsumer:
 
         if self._channel and not self._channel.is_closed:
             try:
-                if self._consumer_tag:
+                if self._consumer_tag and self._queue:
                     await self._queue.cancel(self._consumer_tag)
                 await self._channel.close()
             except Exception as exc:

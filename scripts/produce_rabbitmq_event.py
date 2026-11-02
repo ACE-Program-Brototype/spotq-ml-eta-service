@@ -44,7 +44,15 @@ async def publish_test_event(args: argparse.Namespace) -> None:
         payload_bytes = json.dumps(data).encode("utf-8")
 
     print(f"Connecting to RabbitMQ: {settings.RABBITMQ_URL}...")
-    connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+    url = settings.RABBITMQ_URL
+    try:
+        connection = await aio_pika.connect_robust(url)
+    except Exception:
+        if "@rabbitmq" in url:
+            url = url.replace("@rabbitmq:", "@localhost:").replace("@rabbitmq/", "@localhost/")
+            connection = await aio_pika.connect_robust(url)
+        else:
+            raise
 
     async with connection:
         channel = await connection.channel()
@@ -84,3 +92,4 @@ if __name__ == "__main__":
     parser.add_argument("--omit-wait-time", action="store_true", help="Omit actual_wait_time_minutes to test auto-calculation")
     parser.add_argument("--malformed", action="store_true", help="Send malformed bytes to test DLQ rejection")
     asyncio.run(publish_test_event(parser.parse_args()))
+
