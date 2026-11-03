@@ -12,11 +12,23 @@ class ETAIngestRequest(BaseModel):
     restaurant_id: str = Field(..., min_length=1, max_length=128)
     party_size: int = Field(..., ge=1, le=100)
     joined_at: str = Field(..., min_length=1)
-    completed_at: str = Field(..., min_length=1)
+    completed_at: str | None = Field(default=None, min_length=1)
+    seated_at: str | None = Field(default=None, min_length=1)
     actual_wait_time_minutes: float | None = Field(
         default=None, gt=0, le=120, allow_inf_nan=False
     )
     total_people_ahead_at_join: int = Field(..., ge=0, le=1000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_completed_at(cls, data: object) -> object:
+        """Support both seated_at and completed_at from queue events."""
+        if isinstance(data, dict):
+            if not data.get("completed_at") and data.get("seated_at"):
+                data["completed_at"] = data["seated_at"]
+            elif not data.get("seated_at") and data.get("completed_at"):
+                data["seated_at"] = data["completed_at"]
+        return data
 
     @model_validator(mode="after")
     def validate_queue_event(self):
@@ -24,6 +36,9 @@ class ETAIngestRequest(BaseModel):
         for field_name in ("queue_entry_id", "restaurant_id"):
             if not getattr(self, field_name).strip():
                 raise ValueError(f"{field_name} must not be blank")
+
+        if not self.completed_at:
+            raise ValueError("completed_at or seated_at timestamp is required")
 
         try:
             joined = datetime.fromisoformat(

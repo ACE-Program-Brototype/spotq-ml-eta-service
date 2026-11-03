@@ -133,6 +133,7 @@ async def process_queue_event(data: dict[str, Any]) -> dict[str, str]:
     event = payload.model_dump()
     event["joined_at"] = joined_at
     event["completed_at"] = completed_at
+    event["seated_at"] = completed_at
     event["is_synthetic"] = False
     event["received_at"] = datetime.now(timezone.utc)
 

@@ -83,6 +83,32 @@ async def test_missing_wait_time_is_auto_calculated_and_persisted(valid_event_di
 
 
 @pytest.mark.asyncio
+async def test_mern_ml_eta_training_event_contract_is_accepted_and_acked():
+    """Verify that MERN's MlEtaTrainingEvent interface (with seated_at) is accepted and ACKed."""
+    mern_event = {
+        "queue_entry_id": "entry-mern-100",
+        "restaurant_id": "restaurant-1",
+        "party_size": 3,
+        "joined_at": "2026-11-03T12:00:00Z",
+        "seated_at": "2026-11-03T12:18:00Z",
+        "total_people_ahead_at_join": 2,
+    }
+
+    consumer = RabbitMQConsumer()
+    message = make_mock_message(mern_event)
+
+    with patch(
+        "app.infrastructure.queue.rabbitmq_consumer.process_queue_event",
+        new=AsyncMock(return_value={"status": "persisted", "queue_entry_id": "entry-mern-100"}),
+    ) as mock_process:
+        await consumer._handle_message(message)
+
+        mock_process.assert_awaited_once_with(mern_event)
+        message.ack.assert_awaited_once()
+
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_is_rejected_to_dlq_without_requeue():
     """AC4 & AC6: Malformed non-JSON message is permanently rejected to DLQ."""
     consumer = RabbitMQConsumer()

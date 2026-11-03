@@ -80,13 +80,25 @@ Messages published by the MERN backend must be UTF-8 encoded JSON payloads confo
 | `restaurant_id` | `string` | **Yes** | Unique identifier for the restaurant (max 128 characters). |
 | `party_size` | `integer` | **Yes** | Number of people in the queue party (1 to 100). |
 | `joined_at` | `string (ISO 8601)` | **Yes** | Timezone-aware ISO 8601 timestamp when user joined queue (e.g. `2026-10-18T12:00:00Z`). |
-| `completed_at` | `string (ISO 8601)` | **Yes** | Timezone-aware ISO 8601 timestamp when wait concluded. Must be strictly after `joined_at`. |
-| `actual_wait_time_minutes` | `number \| null` | *Optional* | Elapsed wait duration in minutes. If omitted or `null`, **automatically calculated by the Python service** as `(completed_at - joined_at).total_seconds() / 60.0`. If provided, must match elapsed time within ±0.51 minutes tolerance. |
+| `seated_at` / `completed_at` | `string (ISO 8601)` | **Yes** | Timezone-aware ISO 8601 timestamp when wait concluded (either `seated_at` or `completed_at` is accepted). Must be strictly after `joined_at`. |
+| `actual_wait_time_minutes` | `number \| null` | *Optional* | Elapsed wait duration in minutes. If omitted or `null`, **automatically calculated by the Python service** as `(seated_at - joined_at).total_seconds() / 60.0`. If provided, must match elapsed time within ±0.51 minutes tolerance. |
 | `total_people_ahead_at_join` | `integer` | **Yes** | Number of people ahead in queue at time of entry (0 to 1,000). |
 
 ### Example Payloads
 
-#### Standard Payload (with wait time):
+#### MERN Backend `MlEtaTrainingEvent` Payload (Standard in SpotQ):
+```json
+{
+  "queue_entry_id": "qe_1234567890abcdef",
+  "restaurant_id": "rest_central_bistro_01",
+  "party_size": 2,
+  "joined_at": "2026-10-18T19:00:00Z",
+  "seated_at": "2026-10-18T19:15:00Z",
+  "total_people_ahead_at_join": 3
+}
+```
+
+#### Legacy / Ingestion Payload (with explicit wait time and completed_at):
 ```json
 {
   "queue_entry_id": "qe_9876543210abcdef",
@@ -96,18 +108,6 @@ Messages published by the MERN backend must be UTF-8 encoded JSON payloads confo
   "completed_at": "2026-10-18T19:24:30Z",
   "actual_wait_time_minutes": 24.5,
   "total_people_ahead_at_join": 8
-}
-```
-
-#### Minimal Payload (omitting wait time; auto-calculated by Python):
-```json
-{
-  "queue_entry_id": "qe_1234567890abcdef",
-  "restaurant_id": "rest_central_bistro_01",
-  "party_size": 2,
-  "joined_at": "2026-10-18T19:00:00Z",
-  "completed_at": "2026-10-18T19:15:00Z",
-  "total_people_ahead_at_join": 3
 }
 ```
 

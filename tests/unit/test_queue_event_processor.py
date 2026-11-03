@@ -220,3 +220,27 @@ async def test_event_without_actual_wait_time_auto_calculates_and_persists(
     # 12:00:00 to 12:10:00 is exactly 10.0 minutes
     assert persisted_doc["actual_wait_time_minutes"] == 10.0
 
+
+@pytest.mark.asyncio
+async def test_event_with_seated_at_instead_of_completed_at(mongo_collection):
+    """Support MERN MlEtaTrainingEvent containing seated_at without completed_at or actual_wait_time_minutes."""
+    mern_event = {
+        "queue_entry_id": "mern-entry-001",
+        "restaurant_id": "mern-rest-001",
+        "party_size": 4,
+        "joined_at": "2026-11-03T10:00:00Z",
+        "seated_at": "2026-11-03T10:20:00Z",
+        "total_people_ahead_at_join": 5,
+    }
+    result = await processor.process_queue_event(mern_event)
+
+    assert result == {
+        "status": "persisted",
+        "queue_entry_id": "mern-entry-001",
+    }
+    persisted_doc = mongo_collection.insert_one.call_args[0][0]
+    assert persisted_doc["actual_wait_time_minutes"] == 20.0
+    assert persisted_doc["completed_at"] == datetime(2026, 11, 3, 10, 20, tzinfo=timezone.utc)
+    assert persisted_doc["seated_at"] == datetime(2026, 11, 3, 10, 20, tzinfo=timezone.utc)
+
+
