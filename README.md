@@ -2,9 +2,9 @@
 
 A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time prediction. SpotQ ETA uses XGBoost model artifacts, MongoDB for queue data, and Redis for historical waiting-time features and asynchronous event processing.
 
-The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, durable **S3 Artifact Storage & Model Registry**, SHA-256 integrity verification, authorized zero-downtime candidate promotion, instant rollback, reproducible ML bootstrap pipelines, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and a BullMQ consumer for completed queue events.
+The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, durable **S3 Artifact Storage & Model Registry**, SHA-256 integrity verification, authorized zero-downtime candidate promotion, instant rollback, reproducible ML bootstrap pipelines, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and an enterprise **RabbitMQ consumer** for completed queue events.
 
-> **Current status (SCRUM-1228):** Implemented **Model Registry, S3 Artifact Storage & Controlled Promotion**. Candidate artifacts are versioned in S3 with SHA-256 integrity verification. Pre-promotion validation guarantees contract parity and production safeguards. Authorized operators can promote candidates (`POST /api/v1/eta/admin/promote-candidate`) with atomic zero-downtime hot-swapping, and instantly restore previous versions (`POST /api/v1/eta/admin/rollback-model`) if needed. The repository is free of committed model binaries; the service automatically bootstraps and validates verified model artifacts directly from AWS S3 upon startup.
+> **Current status (SCRUM-1257):** Implemented **RabbitMQ Event Consumer & Ingestion Integration**. Replaced legacy BullMQ with an async RabbitMQ consumer (`aio-pika`), complete with AMQP 0-9-1 topology (`spotq.events` exchange, `ml-eta-queue`, and DLQ `ml-eta-queue.dlq`). Features automatic calculation of `actual_wait_time_minutes` when omitted by MERN, durable MongoDB persistence, idempotent deduplication, poison-pill dead-lettering, exponential backoff reconnection handling, and real-time Prometheus observability metrics.
 
 ---
 
@@ -24,7 +24,7 @@ The service follows Clean Architecture principles and includes an **Automated ET
 - [MLflow Experiment Tracking](#mlflow-experiment-tracking)
 - [Redis Historical Feature Pre-warming](#redis-historical-feature-pre-warming)
 - [Running the API](#running-the-api)
-- [BullMQ Event Consumer](#bullmq-event-consumer)
+- [RabbitMQ Event Consumer](#rabbitmq-event-consumer)
 - [Testing and Code Quality](#testing-and-code-quality)
 - [Docker](#docker)
 - [Branching and CI](#branching-and-ci)
@@ -66,22 +66,24 @@ SpotQ ETA separates HTTP presentation, application logic, infrastructure integra
 
          ┌────────────────────┐
          │ MERN Backend        │
-         │ BullMQ Producer     │
+         │ RabbitMQ Producer   │
          └──────────┬─────────┘
-                    │ Enqueue completed queue events
+                    │ Publish AMQP message (queue.event.completed)
          ┌──────────▼─────────┐
-         │ Redis 7.x           │
-         │ BullMQ Queue        │
-         │ ml-eta-queue        │
+         │ RabbitMQ Broker     │
+         │ Exchange:          │
+         │  spotq.events       │
+         │ Queue: ml-eta-queue │
+         │ DLQ:   ...queue.dlq │
          └──────────┬─────────┘
-                    │ Consume jobs
+                    │ Consume (prefetch: 10)
          ┌──────────▼─────────┐
-         │ Python BullMQ       │
+         │ Python RabbitMQ     │
          │ Consumer Worker     │
          └──────────┬─────────┘
-                    │ Validate and persist
+                    │ Validate, compute wait time & persist
          ┌──────────▼─────────┐
-         │ MongoDB             │
+         │ MongoDB Atlas       │
          │ queue_events        │
          └────────────────────┘
 
@@ -97,7 +99,7 @@ SpotQ ETA separates HTTP presentation, application logic, infrastructure integra
          └───────────────────────────────┘
 ```
 
-The API and queue consumer are separate processes. The consumer receives events through BullMQ and writes validated queue records to MongoDB. It does not require an HTTP bridge between the MERN producer and the Python service.
+The API integrates the RabbitMQ queue consumer natively in its background lifespan (or via standalone worker). The consumer receives events through RabbitMQ and writes validated queue records to MongoDB. It does not require an HTTP bridge between the MERN producer and the Python service.
 
 The offline training pipeline prepares model candidates and historical features. It does not introduce an automated model-promotion mechanism.
 
@@ -560,73 +562,63 @@ Development serving verification: the six-feature synthetic candidate loaded suc
 
 ---
 
-## BullMQ Event Consumer
+## RabbitMQ Event Consumer
 
-**Worker:** `app/infrastructure/queue/bullmq_worker.py`
+**Consumer Implementation:** `app/infrastructure/queue/rabbitmq_consumer.py`  
+**Standalone Worker Entrypoint:** `scripts/run_rabbitmq_worker.py`  
+**Integration Documentation:** `docs/mern-rabbitmq-integration.md`  
 
-**Entrypoint:** `scripts/run_queue_worker.py`
-
-The BullMQ consumer runs as a standalone Python process, separate from FastAPI. It consumes completed queue events from Redis and persists validated records to MongoDB.
+The RabbitMQ consumer processes completed queue events published by the MERN backend over AMQP 0-9-1. It is embedded directly in the FastAPI application lifespan (starting and shutting down automatically with `uvicorn`), or can be run as a standalone worker process.
 
 ### Architecture
 
 ```text
-MERN Backend
+MERN Backend (Producer)
     │
-    │ Enqueue completed queue event
+    │ Publish AMQP message (Routing key: queue.event.completed)
     ▼
-BullMQ Queue: ml-eta-queue
-    │
-    ▼
-Redis 7.x
-Prefix: bull
+RabbitMQ Broker
+Exchange: spotq.events (topic)
     │
     ▼
-Python BullMQ Consumer
+Durable Queue: ml-eta-queue
+    │ (Dead-lettered on failure to ml-eta-queue.dlq)
+    ▼
+Python RabbitMQ Consumer (aio-pika)
     │
-    ├── Validate event schema
-    ├── Validate timestamps and wait duration
-    ├── Persist to MongoDB
-    ├── Handle identical duplicates idempotently
-    └── Permanently reject invalid/conflicting events
+    ├── Decode JSON
+    ├── Validate event schema & timestamps
+    ├── Auto-compute actual_wait_time_minutes if omitted
+    ├── Verify idempotency via queue_entry_id
+    ├── Persist to MongoDB (queue_events)
+    ├── ACK on successful persistence
+    └── Reject (requeue=False) poison pills / validation errors to DLQ
     │
     ▼
 MongoDB: queue_events
 ```
 
-### Run the consumer
+### Running the Consumer
 
-Ensure Redis and MongoDB are reachable and the environment is configured to match the producer.
+When the FastAPI server starts, the consumer automatically initializes and runs in the background.
 
-Set the queue configuration:
-
-```bash
-export BULLMQ_QUEUE_NAME=ml-eta-queue
-export BULLMQ_PREFIX=bull
-export BULLMQ_CONCURRENCY=5
-```
-
-Then run the worker:
+To run the consumer as a dedicated standalone background worker:
 
 ```bash
-uv run python scripts/run_queue_worker.py
+uv run python scripts/run_rabbitmq_worker.py
 ```
 
-The worker initializes MongoDB, ensures the unique queue-event index exists, creates the BullMQ consumer, and begins processing jobs.
-
-When using Infisical, use the authorized project configuration for the worker process:
+With Infisical:
 
 ```bash
-infisical run --projectId <your-project-id> --env=dev -- uv run python scripts/run_queue_worker.py
+infisical run --projectId <your-project-id> --env=dev -- uv run python scripts/run_rabbitmq_worker.py
 ```
 
-Run the API and consumer as separate processes. In containerized development, ensure both services can reach the same Redis instance and use compatible connection settings.
+### Event Validation & Auto-Calculation
 
-### Event validation
+The event schema is defined in `app/application/schemas/queue_event.py`.
 
-The shared schema is defined in `app/application/schemas/queue_event.py`.
-
-Each event must include:
+Each event includes:
 
 | Field | Validation |
 |---|---|
@@ -635,26 +627,19 @@ Each event must include:
 | `party_size` | Integer, 1–100 |
 | `joined_at` | Valid ISO 8601 timestamp with timezone |
 | `completed_at` | Valid ISO 8601 timestamp with timezone, after joining |
-| `actual_wait_time_minutes` | Positive finite number, maximum 120 |
+| `actual_wait_time_minutes` | Optional positive float (max 120). If omitted, automatically computed from `completed_at - joined_at` |
 | `total_people_ahead_at_join` | Integer, 0–1000 |
 
-The processor normalizes timestamps to UTC and checks that the difference between `joined_at` and `completed_at` matches `actual_wait_time_minutes` within a tolerance of 0.51 minutes.
+### Persistence, Reliability, and DLQ Handling
 
-### Persistence and idempotency
+The consumer enforces strict message reliability:
 
-The processor writes events to the MongoDB `queue_events` collection.
-
-A unique index named `uq_queue_entry_id` on `queue_entry_id` prevents duplicate event records, provided existing data satisfies the uniqueness constraint.
-
-The processor handles redelivery as follows:
-
-- **New event:** validates and persists the event.
-- **Identical duplicate:** confirms that the existing event matches and returns a successful duplicate result without inserting another record.
-- **Conflicting duplicate:** rejects reuse of the same event ID with different event data and preserves the existing record.
-- **Invalid event:** permanently rejects schema-invalid or business-invalid payloads.
-- **Transient failure:** propagates unexpected database or processing errors so BullMQ can apply its retry policy.
-
-The worker only returns success after MongoDB persistence succeeds or an identical existing event has been confirmed.
+- **New event:** Validated and persisted to MongoDB `queue_events`, then explicitly ACKed.
+- **Auto wait-time calculation:** If MERN omits `actual_wait_time_minutes`, the consumer calculates it accurately from `(completed_at - joined_at)` in minutes.
+- **Identical duplicate:** Acknowledged (`ACK`) idempotently without inserting duplicate records.
+- **Conflicting duplicate or invalid schema:** Rejected without requeue (`requeue=False`), routing the message to `ml-eta-queue.dlq` for operator inspection.
+- **Transient database error:** NACKed with requeue (`requeue=True`) so RabbitMQ redelivers the message when the database recovers.
+- **Connection loss:** Consumer enters an automatic reconnection loop with exponential backoff until the RabbitMQ broker recovers.
 
 ### Retry and failed-job handling
 

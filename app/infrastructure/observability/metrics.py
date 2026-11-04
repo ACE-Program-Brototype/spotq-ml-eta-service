@@ -126,3 +126,35 @@ ETA_INFERENCE_FAILURE_TOTAL = _get_or_create_counter(
     "spotq_eta_inference_failure_total",
     "ETA prediction failures during model inference",
 )
+
+# RabbitMQ Event Integration Metrics (SCRUM-1257)
+RABBITMQ_HEALTH_GAUGE = _get_or_create_gauge(
+    "spotq_rabbitmq_health_status",
+    "RabbitMQ consumer connection health (1 = connected, 0 = disconnected)",
+)
+
+RABBITMQ_MESSAGES_RECEIVED_TOTAL = _get_or_create_counter(
+    "spotq_rabbitmq_messages_received_total",
+    "Total RabbitMQ queue event messages received by consumer",
+)
+
+RABBITMQ_MESSAGES_PROCESSED_TOTAL = _get_or_create_counter(
+    "spotq_rabbitmq_messages_processed_total",
+    "Total RabbitMQ messages successfully validated and persisted",
+)
+
+RABBITMQ_MESSAGES_FAILED_TOTAL = _get_or_create_counter(
+    "spotq_rabbitmq_messages_failed_total",
+    "Total RabbitMQ messages that failed processing due to transient errors",
+)
+
+RABBITMQ_MESSAGES_REJECTED_TOTAL = _get_or_create_counter(
+    "spotq_rabbitmq_messages_rejected_total",
+    "Total RabbitMQ messages permanently rejected and routed to DLQ",
+)
+
+RABBITMQ_MESSAGE_PROCESSING_DURATION = _get_or_create_histogram(
+    "spotq_rabbitmq_message_processing_duration_seconds",
+    "Duration of RabbitMQ message validation and persistence in seconds",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
+)

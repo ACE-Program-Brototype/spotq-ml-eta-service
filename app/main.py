@@ -19,7 +19,7 @@ from app.infrastructure.observability.metrics import (
     MONGO_HEALTH_GAUGE,
     REDIS_HEALTH_GAUGE,
 )
-from app.infrastructure.queue.bullmq_worker import create_queue_worker
+from app.infrastructure.queue.rabbitmq_consumer import create_rabbitmq_consumer
 from app.presentation.health.router import router as health_router
 from app.presentation.admin.model_router import router as model_admin_router
 from app.presentation.predict.router import api_v1_router as eta_v1_router
@@ -70,26 +70,30 @@ async def lifespan(app: FastAPI):
             "SpotQ ETA service cannot start: no valid ETA model is available"
         )
 
-    worker = None
-    worker_task = None
+    rabbitmq_consumer = None
+    consumer_task = None
     try:
-        worker = await create_queue_worker()
-        worker_task = asyncio.create_task(worker.run())
-        logger.info("BullMQ queue consumer started in background")
+        rabbitmq_consumer = await create_rabbitmq_consumer()
+        consumer_task = asyncio.create_task(rabbitmq_consumer.run())
+        logger.info("RabbitMQ queue consumer started in background")
     except Exception as exc:
-        logger.warning("BullMQ worker startup deferred or failed", error=str(exc))
+        logger.warning("RabbitMQ consumer startup deferred or failed", error=str(exc))
 
     try:
         yield
     finally:
         logger.info("Service shutting down")
-        if worker is not None:
+        if rabbitmq_consumer is not None:
             try:
-                await worker.close()
+                await rabbitmq_consumer.close()
             except Exception as exc:
-                logger.warning("BullMQ worker cleanup failed", error=str(exc))
-        if worker_task is not None:
-            worker_task.cancel()
+                logger.warning("RabbitMQ consumer cleanup failed", error=str(exc))
+        if consumer_task is not None and not consumer_task.done():
+            consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                pass
 
         REDIS_HEALTH_GAUGE.set(0.0)
         MONGO_HEALTH_GAUGE.set(0.0)

@@ -87,11 +87,17 @@ async def ensure_queue_event_indexes() -> None:
     if db is None:
         raise RuntimeError("MongoDB is unavailable")
 
-    await db[COLLECTION_NAME].create_index(
-        [("queue_entry_id", ASCENDING)],
-        unique=True,
-        name="uq_queue_entry_id",
-    )
+    try:
+        await db[COLLECTION_NAME].create_index(
+            [("queue_entry_id", ASCENDING)],
+            unique=True,
+            name="uq_queue_entry_id",
+        )
+    except DuplicateKeyError as exc:
+        logger.warning(
+            "Unique index on queue_entry_id deferred due to duplicate keys in collection",
+            error=str(exc),
+        )
 
 
 async def process_queue_event(data: dict[str, Any]) -> dict[str, str]:
@@ -104,8 +110,9 @@ async def process_queue_event(data: dict[str, Any]) -> dict[str, str]:
     try:
         payload = ETAIngestRequest.model_validate(data)
     except ValidationError as exc:
+        first_err = exc.errors()[0]["msg"] if exc.errors() else str(exc)
         raise QueueEventValidationError(
-            "Queue event failed schema validation"
+            f"Queue event failed schema validation: {first_err}"
         ) from exc
 
     joined_at = _parse_utc_datetime(payload.joined_at)
@@ -126,6 +133,7 @@ async def process_queue_event(data: dict[str, Any]) -> dict[str, str]:
     event = payload.model_dump()
     event["joined_at"] = joined_at
     event["completed_at"] = completed_at
+    event["seated_at"] = completed_at
     event["is_synthetic"] = False
     event["received_at"] = datetime.now(timezone.utc)
 
