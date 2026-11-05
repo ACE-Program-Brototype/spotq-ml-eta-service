@@ -173,3 +173,4 @@ def validate_prediction_features(
         valid_records=[],
     )
     return valid_features_list, report
+

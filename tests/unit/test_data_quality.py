@@ -157,3 +157,4 @@ def test_validate_prediction_features_for_drift():
     assert report.valid_count == 1
     assert report.rejections.missing_features == 1
     assert report.rejections.non_finite_features == 1
+
