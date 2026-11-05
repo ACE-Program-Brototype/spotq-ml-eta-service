@@ -23,6 +23,25 @@ def test_eta_predict_endpoint():
         assert data["confidence_score"] is None
         assert "timestamp" in data
         assert isinstance(data["fallback_used"], bool)
+        assert "prediction_id" in data
+
+
+def test_eta_predict_with_queue_entry_id():
+    """Verify GET /api/v1/eta/predict accepts optional queue_entry_id for correlation."""
+    response = client.get(
+        "/api/v1/eta/predict",
+        params={
+            "restaurant_id": "c3b9a782-9011-4712-8f1d-2395a123bc45",
+            "total_people_ahead": 5,
+            "party_size": 2,
+            "queue_entry_id": "queue-entry-test-1234",
+        },
+    )
+    assert response.status_code in [200, 503]
+    if response.status_code == 200:
+        data = response.json()
+        assert data["prediction_id"] is not None
+        assert data["prediction_id"].startswith("pred_")
 
 
 def test_eta_predict_validation_errors():
