@@ -121,3 +121,4 @@ def test_performance_evaluator_flags_degradation_when_thresholds_exceeded():
     assert cand.is_degraded is True
     assert report.has_degradation is True
     assert any("MAE" in reason for reason in cand.degradation_reasons)
+
