@@ -236,3 +236,4 @@ def correlate_records_in_memory(
         uncorrelated_outcomes_count=len(events) - len(matched_event_ids),
         records=correlated_records,
     )
+
