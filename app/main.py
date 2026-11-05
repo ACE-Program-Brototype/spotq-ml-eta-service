@@ -22,6 +22,7 @@ from app.infrastructure.observability.metrics import (
 from app.infrastructure.queue.rabbitmq_consumer import create_rabbitmq_consumer
 from app.presentation.health.router import router as health_router
 from app.presentation.admin.model_router import router as model_admin_router
+from app.presentation.admin.monitoring_router import router as monitoring_admin_router
 from app.presentation.predict.router import api_v1_router as eta_v1_router
 
 setup_logging()
@@ -138,6 +139,7 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.include_router(health_router)
 app.include_router(eta_v1_router)
 app.include_router(model_admin_router)
+app.include_router(monitoring_admin_router)
 
 
 @app.get("/")

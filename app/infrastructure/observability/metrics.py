@@ -158,3 +158,48 @@ RABBITMQ_MESSAGE_PROCESSING_DURATION = _get_or_create_histogram(
     "Duration of RabbitMQ message validation and persistence in seconds",
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5),
 )
+
+
+def _get_or_create_counter_with_labels(name: str, documentation: str, labelnames: list[str]) -> Counter:
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Counter(name, documentation, labelnames=labelnames)
+
+
+def _get_or_create_gauge_with_labels(name: str, documentation: str, labelnames: list[str]) -> Gauge:
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    return Gauge(name, documentation, labelnames=labelnames)
+
+
+# SCRUM-1229 Model Monitoring & Retraining Metrics
+MONITORING_EVALUATIONS_TOTAL = _get_or_create_counter_with_labels(
+    "spotq_monitoring_evaluations_total",
+    "Total monitoring evaluations performed",
+    labelnames=["status"],
+)
+
+MONITORING_MAE_GAUGE = _get_or_create_gauge_with_labels(
+    "spotq_monitoring_mae_minutes",
+    "Mean Absolute Error in minutes for model version",
+    labelnames=["model_version"],
+)
+
+MONITORING_RMSE_GAUGE = _get_or_create_gauge_with_labels(
+    "spotq_monitoring_rmse_minutes",
+    "Root Mean Squared Error in minutes for model version",
+    labelnames=["model_version"],
+)
+
+MONITORING_FEATURE_DRIFT_PSI = _get_or_create_gauge_with_labels(
+    "spotq_monitoring_feature_drift_psi",
+    "Population Stability Index drift per feature",
+    labelnames=["feature_name"],
+)
+
+MONITORING_RETRAINING_TRIGGERS_TOTAL = _get_or_create_counter_with_labels(
+    "spotq_monitoring_retraining_triggers_total",
+    "Total retraining requests evaluated",
+    labelnames=["trigger_type", "status"],
+)
+

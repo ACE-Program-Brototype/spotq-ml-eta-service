@@ -58,6 +58,9 @@ class RetrainingExecutionResult(BaseModel):
 class RetrainingTriggerManager:
     """Manages retraining trigger decisions, concurrency locks, and execution."""
 
+    _lock: asyncio.Lock = asyncio.Lock()
+    _last_completed_retraining: Optional[datetime] = None
+
     def __init__(
         self,
         cooldown_hours: float | None = None,
@@ -73,8 +76,6 @@ class RetrainingTriggerManager:
             if enabled_auto_triggers is not None
             else settings.ENABLE_AUTOMATIC_RETRAINING_TRIGGERS
         )
-        self._lock = asyncio.Lock()
-        self._last_completed_retraining: Optional[datetime] = None
 
     @property
     def is_training_in_progress(self) -> bool:
@@ -109,6 +110,35 @@ class RetrainingTriggerManager:
                 )
 
         return None
+
+    async def evaluate_trigger(
+        self,
+        performance_report: Optional[ModelPerformanceReport] = None,
+        drift_report: Optional[FeatureDriftReport] = None,
+        is_manual: bool = False,
+        operator_id: Optional[str] = None,
+        manual_notes: Optional[str] = None,
+    ) -> TriggerDecision:
+        """Alias for evaluate_triggers."""
+        return await self.evaluate_triggers(
+            performance_report=performance_report,
+            drift_report=drift_report,
+            is_manual=is_manual,
+            operator_id=operator_id,
+            manual_notes=manual_notes,
+        )
+
+    async def request_manual_retraining(
+        self,
+        reason: str,
+        approver_id: str = "admin_operator",
+    ) -> TriggerDecision:
+        """Convenience method for operator-initiated manual retraining triggers."""
+        return await self.evaluate_triggers(
+            is_manual=True,
+            operator_id=approver_id,
+            manual_notes=reason,
+        )
 
     async def evaluate_triggers(
         self,
@@ -421,3 +451,4 @@ class RetrainingTriggerManager:
 
 
 retraining_trigger_manager = RetrainingTriggerManager()
+
