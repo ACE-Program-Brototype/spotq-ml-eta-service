@@ -206,3 +206,4 @@ async def test_trigger_manual_retrain_endpoint():
         assert data["decision"]["trigger_type"] == "manual"
         assert data["execution"]["candidate_artifact_id"] == "eta_candidate_manual_test.json"
         assert data["execution"]["is_eligible_for_promotion"] is True
+

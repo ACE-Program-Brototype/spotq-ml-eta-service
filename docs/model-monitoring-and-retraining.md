@@ -345,3 +345,4 @@ uv run python scripts/run_model_monitoring.py --lookback-hours 48 --no-auto-trig
 # Target specific restaurant
 uv run python scripts/run_model_monitoring.py --restaurant-id rest_101
 ```
+

@@ -227,3 +227,4 @@ async def run_monitoring_cycle(
     )
 
     return report
+
