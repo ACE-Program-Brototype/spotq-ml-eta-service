@@ -57,5 +57,5 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=8000 \
     INFISICAL_DISABLE_UPDATE_CHECK=true
 
-# Entrypoint using Infisical to inject secrets into Uvicorn
-CMD ["infisical", "run", "--", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Entrypoint using resilient script (handles both Infisical token and standard env vars)
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

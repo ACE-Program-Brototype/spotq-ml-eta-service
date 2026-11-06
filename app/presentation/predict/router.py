@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import numpy as np
@@ -18,6 +19,7 @@ from app.infrastructure.logging.logger import logger
 from app.infrastructure.ml_models.features import FEATURE_NAMES, build_feature_row
 from app.infrastructure.ml_models.loader import model_loader
 from app.infrastructure.ml_models.redis_history import get_historical_average
+from app.infrastructure.monitoring.prediction_logger import log_prediction_background
 from app.infrastructure.observability.metrics import (
     ETA_CLAMPED_TOTAL,
     ETA_FALLBACK_TOTAL,
@@ -37,6 +39,7 @@ class ETAPredictResponse(BaseModel):
     confidence_score: float | None = None
     timestamp: str
     fallback_used: bool = False
+    prediction_id: str | None = None
 
 
 class ETAIngestResponse(BaseModel):
@@ -113,9 +116,11 @@ async def predict_eta(
     restaurant_id: str = Query(..., min_length=1),
     total_people_ahead: int = Query(..., ge=0, le=1000),
     party_size: int = Query(..., ge=1, le=100),
+    queue_entry_id: str | None = Query(default=None, max_length=128),
 ) -> ETAPredictResponse:
     """Predict wait using the canonical six-feature contract and local calendar time."""
     request_started = perf_counter()
+    prediction_id = f"pred_{uuid4().hex[:16]}"
     try:
         if not restaurant_id.strip():
             raise HTTPException(
@@ -195,12 +200,25 @@ async def predict_eta(
                 history_source=history_source,
             )
 
+        model_version = model_snapshot.model_version or "unknown"
+        log_prediction_background(
+            prediction_id=prediction_id,
+            restaurant_id=restaurant_id,
+            model_version=model_version,
+            predicted_wait_minutes=float(estimate),
+            features={name: float(feature_row[name]) for name in FEATURE_NAMES},
+            timestamp=timestamp,
+            queue_entry_id=queue_entry_id,
+            fallback_used=fallback_used,
+        )
+
         return ETAPredictResponse(
             restaurant_id=restaurant_id,
             estimated_wait_minutes=float(estimate),
             confidence_score=None,
             timestamp=timestamp.isoformat(),
             fallback_used=fallback_used,
+            prediction_id=prediction_id,
         )
     except HTTPException:
         raise
