@@ -566,24 +566,20 @@ The SpotQ ETA service provides RESTful endpoints organized under inference, syst
 Computes estimated waiting time in minutes using XGBoost and Redis historical averages. Asynchronously persists prediction features to MongoDB for monitoring without inference latency.
 
 - **Query Parameters:**
-  - `party_size` (int, 1-20, required): Number of guests.
   - `restaurant_id` (str, required): Target restaurant ID.
-  - `total_people_ahead` (int, >= 0, optional): Queue depth.
+  - `total_people_ahead` (int, 0-1000, required): Count of people ahead in queue.
+  - `party_size` (int, 1-100, required): Number of guests in party.
   - `queue_entry_id` (str, optional): Correlation identifier for eventual completion event.
 
 - **Example Response (200 OK):**
 ```json
 {
-  "predicted_wait_time_minutes": 18.5,
-  "confidence_interval": { "lower_bound_minutes": 15.0, "upper_bound_minutes": 22.0 },
-  "party_size": 2,
-  "people_ahead": 4,
   "restaurant_id": "rest_101",
-  "historical_average_applied": 17.5,
-  "is_fallback": false,
-  "is_clamped": false,
-  "prediction_id": "pred_4d89a71b2e3c",
-  "model_version": "eta_model_candidate"
+  "estimated_wait_minutes": 18.5,
+  "confidence_score": null,
+  "timestamp": "2026-11-06T15:00:00.000000+00:00",
+  "fallback_used": false,
+  "prediction_id": "pred_c3d4e5f6a7b81234"
 }
 ```
 
