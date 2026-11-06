@@ -108,6 +108,13 @@ class FeatureDriftDetector:
         self._baseline_data = load_baseline_distribution(baseline_path)
         self.baseline_version = self._baseline_data.get("baseline_version", "unknown")
 
+    def evaluate_drift(
+        self,
+        feature_rows: list[dict[str, float]],
+    ) -> FeatureDriftReport:
+        """Alias for evaluate_feature_drift."""
+        return self.evaluate_feature_drift(feature_rows)
+
     def evaluate_feature_drift(
         self,
         feature_rows: list[dict[str, float]],

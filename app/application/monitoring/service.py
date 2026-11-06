@@ -48,7 +48,7 @@ class MonitoringCycleReport(BaseModel):
     evaluation_id: str
     evaluated_at: datetime
     lookback_hours: int
-    active_model_version: str
+    active_model_version: Optional[str] = "unknown"
     correlation_summary: CorrelationSummary
     data_quality_report: DataQualityReport
     drift_report: FeatureDriftReport
@@ -119,7 +119,7 @@ async def run_monitoring_cycle(
     )
 
     active_snapshot = model_loader.get_snapshot()
-    active_version = getattr(active_snapshot, "model_version", "unknown")
+    active_version = getattr(active_snapshot, "model_version", None) or "unknown"
 
     logger.info(
         "Starting model monitoring evaluation cycle",
