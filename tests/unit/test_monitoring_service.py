@@ -44,3 +44,4 @@ async def test_run_monitoring_cycle_end_to_end_orchestration():
         assert report.performance_report is not None
         assert report.trigger_decision is not None
         assert report.trigger_decision.should_retrain is False
+
