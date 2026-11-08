@@ -183,6 +183,42 @@ class Settings(BaseSettings):
         description="Maximum concurrent queue-event jobs",
     )
 
+    # Model Monitoring & Retraining Triggers (SCRUM-1229)
+    ENABLE_AUTOMATIC_RETRAINING_TRIGGERS: bool = Field(
+        default=True,
+        description="Master toggle allowing automatic retraining requests on drift or degradation",
+    )
+    RETRAINING_COOLDOWN_HOURS: float = Field(
+        default=4.0,
+        ge=0.1,
+        description="Minimum cooldown in hours between automated retraining runs",
+    )
+    MONITORING_MIN_SAMPLE_SIZE: int = Field(
+        default=30,
+        ge=5,
+        description="Minimum valid samples required for reliable performance and drift evaluation",
+    )
+    MONITORING_MAX_ACCEPTABLE_MAE_MINUTES: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="Maximum acceptable rolling MAE in minutes before triggering retraining",
+    )
+    MONITORING_MAX_ACCEPTABLE_RMSE_MINUTES: float = Field(
+        default=8.0,
+        gt=0.0,
+        description="Maximum acceptable rolling RMSE in minutes before triggering retraining",
+    )
+    MONITORING_PSI_DRIFT_THRESHOLD: float = Field(
+        default=0.25,
+        gt=0.0,
+        description="Population Stability Index (PSI) threshold for significant feature drift",
+    )
+    MONITORING_EVALUATION_WINDOW_HOURS: float = Field(
+        default=24.0,
+        ge=1.0,
+        description="Default rolling lookback window in hours for monitoring evaluation",
+    )
+
     @model_validator(mode="after")
     def validate_production_model(self) -> "Settings":
         """Enforce production model configuration safeguards."""

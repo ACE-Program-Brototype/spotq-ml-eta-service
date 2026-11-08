@@ -4,7 +4,9 @@ A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time pred
 
 The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, durable **S3 Artifact Storage & Model Registry**, SHA-256 integrity verification, authorized zero-downtime candidate promotion, instant rollback, reproducible ML bootstrap pipelines, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and an enterprise **RabbitMQ consumer** for completed queue events.
 
-> **Current status (SCRUM-1257):** Implemented **RabbitMQ Event Consumer & Ingestion Integration**. Replaced legacy BullMQ with an async RabbitMQ consumer (`aio-pika`), complete with AMQP 0-9-1 topology (`spotq.events` exchange, `ml-eta-queue`, and DLQ `ml-eta-queue.dlq`). Features automatic calculation of `actual_wait_time_minutes` when omitted by MERN, durable MongoDB persistence, idempotent deduplication, poison-pill dead-lettering, exponential backoff reconnection handling, and real-time Prometheus observability metrics.
+> **Current status (SCRUM-1229):** Implemented **Production Model Monitoring, Feature Drift Detection & Automated Retraining Triggers**. Includes zero-latency prediction feature logging, outcome correlation with completed queue events (exact and temporal fallback), data quality exclusion guards ($N \ge 30$), Population Stability Index (PSI) drift monitoring across all 6 canonical features, rolling MAE and RMSE performance attribution, configurable concurrency-locked and cooldown-enforced retraining triggers, Prometheus metrics, offline evaluation runner, and authenticated Admin APIs. **Strict lifecycle safety boundary:** retraining strictly produces candidate artifacts and NEVER automatically activates or promotes models into serving.
+>
+> **RabbitMQ Ingestion (SCRUM-1257):** Enterprise RabbitMQ consumer (`aio-pika`) with AMQP 0-9-1 topology (`spotq.events` exchange, `ml-eta-queue`, and DLQ `ml-eta-queue.dlq`), automatic `actual_wait_time_minutes` calculation, durable MongoDB persistence, and idempotent deduplication.
 
 ---
 
@@ -16,8 +18,10 @@ The service follows Clean Architecture principles and includes an **Automated ET
 - [Prerequisites](#prerequisites)
 - [Local Setup](#local-setup)
 - [Configuration and Secrets](#configuration-and-secrets)
+- [API Reference & Documentation](#api-reference--documentation)
 - [Automated ETA Model Training & Retraining Pipeline](#automated-eta-model-training--retraining-pipeline)
 - [S3 Model Registry & Controlled Promotion](#s3-model-registry--controlled-promotion)
+- [Model Monitoring, Drift Detection & Retraining Triggers](#model-monitoring-drift-detection--retraining-triggers)
 - [Synthetic Data Generation](#synthetic-data-generation)
 - [Data Cleaning and Feature Engineering](#data-cleaning-and-feature-engineering)
 - [Model Training and Evaluation](#model-training-and-evaluation)
@@ -530,6 +534,155 @@ cat app/infrastructure/ml_models/artifacts/candidates/redis_prewarm_report.json
 | Execution status | Completed |
 
 All synthetic aggregates remain identifiable as synthetic and must not be interpreted as validated live restaurant history.
+
+---
+
+## API Reference & Documentation
+
+The SpotQ ETA service provides RESTful endpoints organized under inference, system observability, model lifecycle management (SCRUM-1228), and monitoring & retraining (SCRUM-1229).
+
+### Endpoint Summary
+
+| Method | Endpoint | Auth | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/healthz` | Public | Basic service readiness / liveness |
+| `GET` | `/health/ready` | Public | Comprehensive health (MongoDB, Redis, RabbitMQ, Loaded Model) |
+| `GET` | `/metrics` | Public | Prometheus observability metrics |
+| `GET` | `/api/v1/eta/predict` | Public | Real-time ETA prediction (with zero-latency logging) |
+| `GET` | `/api/v1/eta/admin/model-status` | `X-Admin-Key` | Inspect active model metadata, SHA-256, and storage mode |
+| `GET` | `/api/v1/eta/admin/candidates` | `X-Admin-Key` | List registered model candidate artifacts in S3 / local |
+| `POST` | `/api/v1/eta/admin/promote-candidate` | `X-Admin-Key` | Atomically hot-swap and promote an authorized candidate model |
+| `POST` | `/api/v1/eta/admin/rollback-model` | `X-Admin-Key` | Instantly revert to previous verified model version |
+| `POST` | `/api/v1/eta/admin/reload-model` | `X-Admin-Key` | Force re-validation and reload of current model |
+| `GET` | `/api/v1/eta/admin/monitoring/status` | `X-Admin-Key` | Inspect latest drift status, error metrics, and lock state |
+| `POST` | `/api/v1/eta/admin/monitoring/evaluate` | `X-Admin-Key` | Run on-demand monitoring cycle across lookback window |
+| `POST` | `/api/v1/eta/admin/monitoring/trigger-retrain` | `X-Admin-Key` | Operator-initiated candidate model retraining |
+
+---
+
+### Detailed Endpoint Specifications
+
+#### 1. Prediction (`GET /api/v1/eta/predict`)
+Computes estimated waiting time in minutes using XGBoost and Redis historical averages. Asynchronously persists prediction features to MongoDB for monitoring without inference latency.
+
+- **Query Parameters:**
+  - `restaurant_id` (str, required): Target restaurant ID.
+  - `total_people_ahead` (int, 0-1000, required): Count of people ahead in queue.
+  - `party_size` (int, 1-100, required): Number of guests in party.
+  - `queue_entry_id` (str, optional): Correlation identifier for eventual completion event.
+
+- **Example Response (200 OK):**
+```json
+{
+  "restaurant_id": "rest_101",
+  "estimated_wait_minutes": 18.5,
+  "confidence_score": null,
+  "timestamp": "2026-11-06T15:00:00.000000+00:00",
+  "fallback_used": false,
+  "prediction_id": "pred_c3d4e5f6a7b81234"
+}
+```
+
+---
+
+#### 2. Monitoring Status (`GET /api/v1/eta/admin/monitoring/status`)
+Inspects active model monitoring health, latest evaluated drift report, rolling error metrics (MAE/RMSE), and retraining state.
+
+- **Headers:** `X-Admin-Key: <secret>`
+- **Example Response (200 OK):**
+```json
+{
+  "status": "operational",
+  "active_model_version": "eta_model_candidate",
+  "is_retraining_locked": false,
+  "latest_evaluation": {
+    "evaluation_id": "eval-8419f2a0-4a81",
+    "evaluated_at": "2026-11-06T01:00:00Z",
+    "lookback_hours": 24,
+    "active_model_version": "eta_model_candidate",
+    "correlation_summary": {
+      "total_predictions": 500,
+      "total_completed_outcomes": 480,
+      "correlated_count": 465,
+      "uncorrelated_predictions_count": 35,
+      "uncorrelated_outcomes_count": 15
+    },
+    "data_quality_report": {
+      "total_evaluated": 465,
+      "valid_count": 462,
+      "excluded_count": 3,
+      "is_sufficient_for_evaluation": true
+    },
+    "drift_report": {
+      "baseline_version": "baseline_v1",
+      "sample_count": 462,
+      "has_significant_drift": false,
+      "drifted_features_count": 0,
+      "feature_results": {
+        "party_size": { "psi_score": 0.031, "drift_level": "stable", "is_drifted": false },
+        "total_people_ahead": { "psi_score": 0.045, "drift_level": "stable", "is_drifted": false },
+        "hour_of_day": { "psi_score": 0.022, "drift_level": "stable", "is_drifted": false },
+        "day_of_week": { "psi_score": 0.015, "drift_level": "stable", "is_drifted": false },
+        "is_weekend": { "psi_score": 0.009, "drift_level": "stable", "is_drifted": false },
+        "historical_average_wait": { "psi_score": 0.054, "drift_level": "stable", "is_drifted": false }
+      }
+    },
+    "performance_report": {
+      "overall_mae_minutes": 2.74,
+      "overall_rmse_minutes": 3.89,
+      "has_degradation": false
+    }
+  },
+  "latest_retraining": null
+}
+```
+
+---
+
+#### 3. Monitoring Evaluation (`POST /api/v1/eta/admin/monitoring/evaluate`)
+Performs an on-demand evaluation cycle over predictions and completed queue events.
+
+- **Headers:** `X-Admin-Key: <secret>`
+- **Request Body:**
+```json
+{
+  "lookback_hours": 24,
+  "min_samples": 30,
+  "restaurant_id": null,
+  "auto_trigger": true,
+  "dataset_mode": "synthetic"
+}
+```
+
+---
+
+#### 4. Manual Candidate Retraining (`POST /api/v1/eta/admin/monitoring/trigger-retrain`)
+Operator-authorized candidate retraining trigger. Retraining strictly produces a candidate artifact in S3 / candidates registry; it **never** auto-promotes the candidate to active serving.
+
+- **Headers:** `X-Admin-Key: <secret>`
+- **Request Body:**
+```json
+{
+  "reason": "Scheduled retraining for new seasonal baseline",
+  "approver_id": "operator_jeswin",
+  "dataset_mode": "synthetic"
+}
+```
+
+---
+
+## Model Monitoring, Drift Detection & Retraining Triggers
+
+**Documentation:** `docs/model-monitoring-and-retraining.md`  
+**Evaluation Script:** `scripts/run_model_monitoring.py`  
+
+### Workflow Highlights
+1. **Prediction-to-Outcome Correlation (AC1):** Matches inference predictions in MongoDB `prediction_logs` with ground truth queue completions in `queue_events` via exact `queue_entry_id` or temporal proximity fallback ($\pm 10$ minutes).
+2. **Data Quality & Exclusion Guard (AC2):** Filters missing/non-finite features, out-of-bounds wait times ($> 120$ min), duplicate queue entries, and verifies sample count meets minimum statistical threshold ($N_{min} \ge 30$).
+3. **Statistical Feature Drift Detection (AC3):** Calculates Population Stability Index (PSI) with Laplace smoothing across all 6 canonical features against the reference baseline (`config/feature_drift_baseline.json`). Flags significant drift when $\text{PSI} \ge 0.25$.
+4. **Outcome Performance Monitoring (AC4):** Calculates rolling MAE and RMSE from completed wait times, strictly attributed to generating model versions.
+5. **Configurable Retraining Triggers (AC5):** Enforces 4-hour cooldown and concurrency lock (`asyncio.Lock`) preventing overlapping training runs.
+6. **Strict Lifecycle Safety Boundary (AC6):** Retraining produces **candidate models only**. The active production model is never mutated or hot-swapped without explicit operator promotion via `/api/v1/eta/admin/promote-candidate`.
 
 ---
 
