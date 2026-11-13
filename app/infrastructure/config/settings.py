@@ -131,7 +131,7 @@ class Settings(BaseSettings):
 
     # RabbitMQ Event Integration (SCRUM-1257)
     RABBITMQ_URL: str = Field(
-        default="amqp://spotq-rabbit:SpotqOfficial78@rabbitmq:5672",
+        default="amqp://guest:guest@localhost:5672/",
         description="RabbitMQ connection URL",
     )
     RABBITMQ_HOST: str = Field(
