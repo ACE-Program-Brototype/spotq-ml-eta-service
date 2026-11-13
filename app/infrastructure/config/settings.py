@@ -131,7 +131,7 @@ class Settings(BaseSettings):
 
     # RabbitMQ Event Integration (SCRUM-1257)
     RABBITMQ_URL: str = Field(
-        default="amqp://guest:guest@localhost:5672/",
+        default="amqp://spotq-rabbit:SpotqOfficial78@rabbitmq:5672",
         description="RabbitMQ connection URL",
     )
     RABBITMQ_HOST: str = Field(
@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     RABBITMQ_EXCHANGE_NAME: str = Field(
         default="spotq.events",
         description="RabbitMQ exchange name for queue events",
+    )
+    RABBITMQ_DLX_EXCHANGE_NAME: str = Field(
+        default="spotq.dlx",
+        description="RabbitMQ dead-letter exchange name",
     )
     RABBITMQ_ROUTING_KEY: str = Field(
         default="queue.event.completed",

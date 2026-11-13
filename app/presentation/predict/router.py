@@ -29,7 +29,7 @@ from app.infrastructure.observability.metrics import (
 )
 from app.application.schemas.queue_event import ETAIngestRequest
 
-api_v1_router = APIRouter(prefix="/api/v1/eta", tags=["ETA"])
+api_v1_router = APIRouter(prefix="/eta", tags=["ETA"])
 
 class ETAPredictResponse(BaseModel):
     """Response contract for a real-time ETA prediction."""
