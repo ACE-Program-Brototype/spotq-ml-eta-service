@@ -45,6 +45,7 @@ class RabbitMQConsumer:
         connection_url: Optional[str] = None,
         queue_name: Optional[str] = None,
         exchange_name: Optional[str] = None,
+        dlx_exchange_name: Optional[str] = None,
         routing_key: Optional[str] = None,
         prefetch_count: Optional[int] = None,
         reconnect_interval: Optional[float] = None,
@@ -52,13 +53,15 @@ class RabbitMQConsumer:
         self.connection_url = connection_url or settings.RABBITMQ_URL
         self.queue_name = queue_name or settings.RABBITMQ_QUEUE_NAME
         self.exchange_name = exchange_name or settings.RABBITMQ_EXCHANGE_NAME
+        self.dlx_exchange_name = (
+            dlx_exchange_name or settings.RABBITMQ_DLX_EXCHANGE_NAME
+        )
         self.routing_key = routing_key or settings.RABBITMQ_ROUTING_KEY
         self.prefetch_count = prefetch_count or settings.RABBITMQ_PREFETCH_COUNT
         self.reconnect_interval = (
             reconnect_interval or settings.RABBITMQ_RECONNECT_INTERVAL_SECONDS
         )
 
-        self.dlx_exchange_name = f"{self.exchange_name}.dlx"
         self.dlq_queue_name = f"{self.queue_name}.dlq"
 
         self._connection: Optional[AbstractRobustConnection] = None
@@ -128,14 +131,14 @@ class RabbitMQConsumer:
         # Setup Topology: DLX & DLQ for poison-pill handling
         dlx = await self._channel.declare_exchange(
             self.dlx_exchange_name,
-            aio_pika.ExchangeType.TOPIC,
+            aio_pika.ExchangeType.DIRECT,
             durable=True,
         )
         dlq = await self._channel.declare_queue(
             self.dlq_queue_name,
             durable=True,
         )
-        await dlq.bind(dlx, routing_key="#")
+        await dlq.bind(dlx, routing_key=self.dlq_queue_name)
 
         # Setup Main Exchange & Queue with DLX configuration
         main_exchange = await self._channel.declare_exchange(
@@ -146,7 +149,7 @@ class RabbitMQConsumer:
 
         queue_arguments = {
             "x-dead-letter-exchange": self.dlx_exchange_name,
-            "x-dead-letter-routing-key": f"{self.routing_key}.failed",
+            "x-dead-letter-routing-key": self.dlq_queue_name,
         }
         self._queue = await self._channel.declare_queue(
             self.queue_name,
@@ -296,8 +299,10 @@ class RabbitMQConsumer:
         logger.info("RabbitMQ consumer gracefully closed")
 
 
-async def create_rabbitmq_consumer() -> RabbitMQConsumer:
+async def create_rabbitmq_consumer(
+    connection_url: Optional[str] = None,
+) -> RabbitMQConsumer:
     """Factory creating and initializing RabbitMQ consumer instance."""
     await ensure_queue_event_indexes()
-    consumer = RabbitMQConsumer()
+    consumer = RabbitMQConsumer(connection_url=connection_url)
     return consumer

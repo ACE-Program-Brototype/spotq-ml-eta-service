@@ -150,6 +150,10 @@ class Settings(BaseSettings):
         default="spotq.events",
         description="RabbitMQ exchange name for queue events",
     )
+    RABBITMQ_DLX_EXCHANGE_NAME: str = Field(
+        default="spotq.dlx",
+        description="RabbitMQ dead-letter exchange name",
+    )
     RABBITMQ_ROUTING_KEY: str = Field(
         default="queue.event.completed",
         description="Routing key pattern for completed queue events",

@@ -138,6 +138,7 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 app.include_router(health_router)
 app.include_router(eta_v1_router)
+app.include_router(eta_v1_router, prefix="/api/v1")
 app.include_router(model_admin_router)
 app.include_router(monitoring_admin_router)
 
