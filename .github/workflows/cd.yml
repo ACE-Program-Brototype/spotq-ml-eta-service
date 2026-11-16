@@ -1,28 +1,33 @@
 name: Continuous Deployment
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Continuous Integration"]
     branches:
       - main
       - staging
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: cd-${{ github.ref }}
+  group: cd-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
           persist-credentials: false
 
       - name: Set up Docker Buildx
@@ -41,8 +46,8 @@ jobs:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/spotq-ml-eta-service
           tags: |
             type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=staging,enable=${{ github.ref == 'refs/heads/staging' }}
+            type=raw,value=latest,enable=${{ (github.event.workflow_run.head_branch || github.ref_name) == 'main' }}
+            type=raw,value=staging,enable=${{ (github.event.workflow_run.head_branch || github.ref_name) == 'staging' }}
 
       - name: Build and Push to Docker Hub
         uses: docker/build-push-action@v5
@@ -60,8 +65,9 @@ jobs:
         run: |
           echo "### 🚀 Docker Deployment Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Target Registry:** Docker Hub (\`${{ secrets.DOCKERHUB_USERNAME }}/spotq-ml-eta-service\`)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Triggered Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit SHA:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered Branch:** \`${{ github.event.workflow_run.head_branch || github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit SHA:** \`${{ github.event.workflow_run.head_sha || github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **CI Conclusion:** \`${{ github.event.workflow_run.conclusion || 'manual_trigger' }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Generated Image Tags:" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
