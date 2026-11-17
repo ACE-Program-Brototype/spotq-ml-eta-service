@@ -1,75 +1,127 @@
-name: Continuous Deployment
+name: ML ETA Service Image Publishing
 
 on:
   workflow_run:
     workflows: ["Continuous Integration"]
+    types: [completed]
     branches:
       - main
-      - staging
-    types:
-      - completed
-  workflow_dispatch:
+      - development
 
 permissions:
   contents: read
 
 concurrency:
-  group: cd-${{ github.event.workflow_run.head_branch || github.ref_name }}
-  cancel-in-progress: true
+  group: ml-eta-image-publish
+  cancel-in-progress: false
 
 jobs:
-  build-and-push:
-    name: Build & Push Docker Image
+  publish:
+    name: Build and Publish Docker Image
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout Source Code
+      - name: Checkout ML ETA Service
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
-          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set Image Details
+        id: image
+        run: |
+          echo "repository=${{ secrets.DOCKERHUB_USERNAME }}/spotq-ml-eta-service" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract Docker Metadata & Tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/spotq-ml-eta-service
-          tags: |
-            type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable=${{ (github.event.workflow_run.head_branch || github.ref_name) == 'main' }}
-            type=raw,value=staging,enable=${{ (github.event.workflow_run.head_branch || github.ref_name) == 'staging' }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push to Docker Hub
-        uses: docker/build-push-action@v5
+      - name: Build and Push Docker Image
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ steps.image.outputs.repository }}:${{ steps.image.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: CD Output Summary
-        if: always()
+      - name: Generate Infrastructure Repository Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.INFRA_APP_ID }}
+          private-key: ${{ secrets.INFRA_APP_PRIVATE_KEY }}
+          owner: ACE-Program-Brototype
+          repositories: spotq-infra
+
+      - name: Checkout Infrastructure Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ACE-Program-Brototype/spotq-infra
+          ref: development
+          token: ${{ steps.app-token.outputs.token }}
+          path: spotq-infra
+          persist-credentials: false
+
+      - name: Update ML ETA Service Image Digest
+        working-directory: spotq-infra
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "### 🚀 Docker Deployment Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Target Registry:** Docker Hub (\`${{ secrets.DOCKERHUB_USERNAME }}/spotq-ml-eta-service\`)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Triggered Branch:** \`${{ github.event.workflow_run.head_branch || github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit SHA:** \`${{ github.event.workflow_run.head_sha || github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **CI Conclusion:** \`${{ github.event.workflow_run.conclusion || 'manual_trigger' }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### Generated Image Tags:" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          MANIFEST="deploy/images.lock.env"
+          KEY="SPOTQ_ML_ETA_SERVICE_IMAGE"
+          IMAGE="docker.io/${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "Manifest not found: $MANIFEST"
+            exit 1
+          fi
+
+          COUNT=$(grep -c "^${KEY}=" "$MANIFEST" || true)
+
+          if [ "$COUNT" -ne 1 ]; then
+            echo "Expected exactly one $KEY entry, found $COUNT"
+            exit 1
+          fi
+
+          sed -i "s|^${KEY}=.*|${KEY}=${IMAGE}|" "$MANIFEST"
+
+          echo "Updated $KEY to $IMAGE"
+
+      - name: Create Infrastructure Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          path: spotq-infra
+          branch: automation/ml-eta-service-image-update
+          delete-branch: true
+          add-paths: deploy/images.lock.env
+          commit-message: "chore(deploy): update ml eta service image"
+          title: "Deploy: Update ML ETA Service Image"
+          body: |
+            ## ML ETA Service Image Update
+
+            A new ML ETA Service Docker image has been published.
+
+            - **Commit:** `${{ github.event.workflow_run.head_sha }}`
+            - **Image:** `${{ steps.image.outputs.repository }}`
+            - **Digest:** `${{ steps.build.outputs.digest }}`
+
+            This PR updates the ML ETA Service image digest
+            in `deploy/images.lock.env`.
+
+            Merge this PR to trigger the infrastructure deployment workflow.
