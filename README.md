@@ -1,30 +1,947 @@
-# SpotQ ETA Microservice (`spotq-eta-service`)
+# SpotQ ETA Microservice
 
-Sub-50ms Wait-Time Prediction Engine for the SpotQ Queue Management Ecosystem.
+A Python 3.11, FastAPI-based microservice for restaurant queue waiting-time prediction. SpotQ ETA uses XGBoost model artifacts, MongoDB for queue data, and Redis for historical waiting-time features and asynchronous event processing.
 
----
+The service follows Clean Architecture principles and includes an **Automated ETA Model Training & Retraining Pipeline**, durable **S3 Artifact Storage & Model Registry**, SHA-256 integrity verification, authorized zero-downtime candidate promotion, instant rollback, reproducible ML bootstrap pipelines, data cleaning, leakage-aware canonical feature engineering, MLflow experiment tracking, candidate eligibility gates, historical-feature pre-warming, and an enterprise **RabbitMQ consumer** for completed queue events.
 
-## Architecture Overview
-
-Built using **Clean Architecture** principles:
-
-* **Presentation Layer:** FastAPI HTTP routes, Health check diagnostics, Prometheus `/metrics` route.
-* **Application Layer:** Prediction & Ingestion use cases, Interface definitions.
-* **Domain Layer:** Pure Python Entities (`QueueItem`, `PartySize`) with zero framework dependencies.
-* **Infrastructure Layer:** Redis Feature Store, MongoDB Ingestion Buffer, XGBoost model loaders, Structlog JSON logging, Doppler config injection.
+> **Current status (SCRUM-1229):** Implemented **Production Model Monitoring, Feature Drift Detection & Automated Retraining Triggers**. Includes zero-latency prediction feature logging, outcome correlation with completed queue events (exact and temporal fallback), data quality exclusion guards ($N \ge 30$), Population Stability Index (PSI) drift monitoring across all 6 canonical features, rolling MAE and RMSE performance attribution, configurable concurrency-locked and cooldown-enforced retraining triggers, Prometheus metrics, offline evaluation runner, and authenticated Admin APIs. **Strict lifecycle safety boundary:** retraining strictly produces candidate artifacts and NEVER automatically activates or promotes models into serving.
+>
+> **RabbitMQ Ingestion (SCRUM-1257):** Enterprise RabbitMQ consumer (`aio-pika`) with AMQP 0-9-1 topology (`spotq.events` exchange, `ml-eta-queue`, and DLQ `ml-eta-queue.dlq`), automatic `actual_wait_time_minutes` calculation, durable MongoDB persistence, and idempotent deduplication.
 
 ---
 
-## Quickstart (Local Development)
+## Table of Contents
 
-### Prerequisites
-* Python 3.11+
-* [`uv`](https://github.com/astral-sh/uv) package manager
-* Docker & Docker Desktop
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Technology Stack](#technology-stack)
+- [Prerequisites](#prerequisites)
+- [Local Setup](#local-setup)
+- [Configuration and Secrets](#configuration-and-secrets)
+- [API Reference & Documentation](#api-reference--documentation)
+- [Automated ETA Model Training & Retraining Pipeline](#automated-eta-model-training--retraining-pipeline)
+- [S3 Model Registry & Controlled Promotion](#s3-model-registry--controlled-promotion)
+- [Model Monitoring, Drift Detection & Retraining Triggers](#model-monitoring-drift-detection--retraining-triggers)
+- [Synthetic Data Generation](#synthetic-data-generation)
+- [Data Cleaning and Feature Engineering](#data-cleaning-and-feature-engineering)
+- [Model Training and Evaluation](#model-training-and-evaluation)
+- [MLflow Experiment Tracking](#mlflow-experiment-tracking)
+- [Redis Historical Feature Pre-warming](#redis-historical-feature-pre-warming)
+- [Running the API](#running-the-api)
+- [RabbitMQ Event Consumer](#rabbitmq-event-consumer)
+- [Testing and Code Quality](#testing-and-code-quality)
+- [Docker](#docker)
+- [Branching and CI](#branching-and-ci)
+- [Current Limitations and Next Steps](#current-limitations-and-next-steps)
 
-### 1. Environment Setup
+---
+
+## Architecture
+
+SpotQ ETA separates HTTP presentation, application logic, infrastructure integrations, and machine-learning workflows.
+
+```text
+                       ┌──────────────────────────┐
+                       │     FastAPI Application  │
+                       │       app/main.py        │
+                       └────────────┬─────────────┘
+                                    │
+                       ┌────────────▼─────────────┐
+                       │ Presentation / HTTP API  │
+                       │ Health and Prediction    │
+                       └────────────┬─────────────┘
+                                    │
+                       ┌────────────▼─────────────┐
+                       │ Application & Domain     │
+                       │ Use Cases / Business     │
+                       │ Rules                    │
+                       └────────────┬─────────────┘
+                                    │
+                  ┌─────────────────┼─────────────────┐
+                  │                 │                 │
+         ┌────────▼────────┐ ┌──────▼────────┐ ┌──────▼────────┐
+         │ MongoDB         │ │ Redis         │ │ XGBoost       │
+         │ Queue Events    │ │ Historical ETA│ │ Model         │
+         │                 │ │ Features      │ │ Artifacts     │
+         └─────────────────┘ └───────────────┘ └───────────────┘
+
+
+                 Asynchronous Queue Ingestion
+
+         ┌────────────────────┐
+         │ MERN Backend        │
+         │ RabbitMQ Producer   │
+         └──────────┬─────────┘
+                    │ Publish AMQP message (queue.event.completed)
+         ┌──────────▼─────────┐
+         │ RabbitMQ Broker     │
+         │ Exchange:          │
+         │  spotq.events       │
+         │ Queue: ml-eta-queue │
+         │ DLQ:   ...queue.dlq │
+         └──────────┬─────────┘
+                    │ Consume (prefetch: 10)
+         ┌──────────▼─────────┐
+         │ Python RabbitMQ     │
+         │ Consumer Worker     │
+         └──────────┬─────────┘
+                    │ Validate, compute wait time & persist
+         ┌──────────▼─────────┐
+         │ MongoDB Atlas       │
+         │ queue_events        │
+         └────────────────────┘
+
+
+              Offline ML Bootstrap Pipeline
+
+         ┌───────────────────────────────┐
+         │ Synthetic Data Generation     │
+         │ Cleaning and Feature Building │
+         │ Chronological Evaluation      │
+         │ XGBoost Candidate Training    │
+         │ Redis Feature Pre-warming     │
+         └───────────────────────────────┘
+```
+
+The API integrates the RabbitMQ queue consumer natively in its background lifespan (or via standalone worker). The consumer receives events through RabbitMQ and writes validated queue records to MongoDB. It does not require an HTTP bridge between the MERN producer and the Python service.
+
+The offline training pipeline prepares model candidates and historical features. It does not introduce an automated model-promotion mechanism.
+
+## Project Structure
+
+```text
+spotq-ml-eta-service/
+├── app/
+│   ├── application/
+│   │   ├── schemas/
+│   │   │   └── queue_event.py
+│   │   └── queue_event_processor.py
+│   ├── domain/
+│   ├── infrastructure/
+│   │   ├── config/
+│   │   ├── cache/
+│   │   ├── database/
+│   │   ├── logging/
+│   │   ├── observability/
+│   │   ├── queue/
+│   │   │   └── bullmq_worker.py
+│   │   └── ml_models/
+│   │       ├── artifacts/
+│   │       │   └── candidates/
+│   │       ├── data_cleaning.py
+│   │       ├── dataset.py
+│   │       ├── diagnostics.py
+│   │       ├── features.py
+│   │       ├── loader.py
+│   │       ├── redis_history.py
+│   │       └── tracking.py
+│   ├── presentation/
+│   │   ├── admin/
+│   │   ├── api/v1/endpoints/
+│   │   ├── health/
+│   │   └── predict/
+│   ├── shared/
+│   └── main.py
+├── config/
+│   └── restaurant_timezones.json
+├── docs/
+│   ├── model-lifecycle.md
+│   └── model-training-workflow.md
+├── scripts/
+│   ├── generate_dummy_model.py
+│   ├── seed_training_data.py
+│   ├── train_eta_model.py
+│   ├── prewarm_redis_history.py
+│   ├── run_queue_worker.py
+│   ├── produce_test_queue_event.py
+│   ├── produce_duplicate_test_event.py
+│   ├── produce_conflicting_test_event.py
+│   └── produce_invalid_test_event.py
+├── tests/
+│   ├── unit/
+│   └── integration/
+├── Dockerfile
+├── docker-compose.dev.yml
+├── pyproject.toml
+├── uv.lock
+└── README.md
+```
+
+The queue-event schema is shared between the HTTP ingestion endpoint and the application processor. The processor contains event validation and persistence logic, while the infrastructure worker handles BullMQ job processing and failure classification.
+
+## Technology Stack
+
+| Component | Technology |
+|---|---|
+| Language | Python 3.11 |
+| API framework | FastAPI |
+| Dependency management | uv |
+| Database | MongoDB |
+| Feature cache and queue transport | Redis |
+| Queue processing | BullMQ Python worker |
+| Node.js producer | BullMQ v6, as reported by the MERN team |
+| Python queue library | `bullmq==3.3.4` |
+| Primary model | XGBoost |
+| Benchmark model | Random Forest |
+| Experiment tracking | MLflow |
+| Model artifact storage | AWS S3 / Boto3 with SHA-256 integrity verification |
+| Data processing | Pandas and NumPy |
+| Validation | Pydantic |
+| Testing | Pytest |
+| Configuration | Pydantic Settings |
+| Logging | Structlog |
+| Observability | Prometheus instrumentation |
+
+---
+
+## Prerequisites
+
+- Python 3.11+
+- `uv`
+- Git
+- Docker and Docker Compose, if using containers
+- Access to a configured MongoDB instance
+- Access to Redis
+- Access to MLflow tracking server (default: `http://localhost:5000`)
+- Infisical CLI and authorized project access, if required by your environment
+
+For the BullMQ consumer, the development environment must also use the queue name and prefix agreed with the MERN team.
+
+## Local Setup
+
+### 1. Clone the repository
+
 ```bash
-# Create virtual environment and install dependencies
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+git clone https://github.com/ACE-Program-Brototype/spotq-ml-eta-service.git
+cd spotq-ml-eta-service
+```
+
+### 2. Install dependencies
+
+```bash
+uv sync --locked
+```
+
+### 3. Configure environment variables
+
+Configure the required environment variables using the project's approved secret-management method.
+
+### 4. Verify the environment
+
+```bash
+uv run python --version
+uv run pytest tests/unit -q
+```
+
+## Configuration and Secrets
+
+SpotQ uses Pydantic Settings to load application configuration. MongoDB and Redis connectivity has been verified in the development environment.
+
+When using Infisical, authenticate with your authorized account:
+
+```bash
+infisical login
+```
+
+Run the API with the project and environment configuration appropriate for your setup:
+
+```bash
+infisical run --projectId <your-project-id> --env=dev -- uv run uvicorn app.main:app --reload --port 8000
+```
+
+For local execution without Infisical, configure the required variables using the names defined in `app/infrastructure/config/settings.py`.
+
+### BullMQ configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BULLMQ_QUEUE_NAME` | `ml-eta-queue` | BullMQ queue consumed by the Python worker |
+| `BULLMQ_PREFIX` | `bull` | BullMQ Redis key prefix |
+| `BULLMQ_CONCURRENCY` | `5` | Maximum concurrent jobs; valid range 1–50 |
+
+The MERN team has reported the following development configuration:
+
+- Queue name: `ml-eta-queue`
+- BullMQ version: `^6.0.9`
+- ioredis version: `^6.0.0`
+- Redis server: Redis 7.x using the official Docker image
+- Key prefix: `bull`
+
+Redis keys therefore follow the expected pattern `bull:ml-eta-queue:*`.
+
+The Python consumer uses its configured Redis connection settings. Ensure its Redis hostname, port, authentication, queue name, and prefix match the development environment used by the producer. Inside Docker Compose, a service hostname may differ from the host machine's `localhost`.
+
+The Python package version is pinned separately in `pyproject.toml`. Cross-language interoperability with the MERN producer has not yet been verified.
+
+### Security guidelines
+
+- Never commit `.env` files, access tokens, database credentials, or service tokens.
+- Do not print secret values when debugging configuration.
+- Use separate credentials for development, staging, and production.
+- Confirm the target database and Redis environment before running scripts that write data.
+
+---
+
+## Automated ETA Model Training & Retraining Pipeline
+
+- **Script:** `scripts/train_eta_model.py`
+- **Tracking Context:** `app/infrastructure/ml_models/tracking.py`
+- **Detailed Guide:** [`docs/model-training-workflow.md`](file:///Users/jeswin07/Documents/Data%20Science%20AI%20ML/Data%20Science%20Btype/SpotQ_ML/spotq-ml-eta-service/docs/model-training-workflow.md)
+
+The automated training and retraining pipeline builds validated candidate model artifacts using historical completed queue outcomes from MongoDB. It operates completely out-of-band without disrupting active inference.
+
+### Core Pipeline Capabilities
+
+1. **Historical Data Validation:** Pulls completed queue outcomes from MongoDB (`queue_events`), verifies required fields, timestamp chronology, non-negative wait durations $\le 120$ min, duration consistency, deduplication, and enforces a configurable `--min-sample-size` (default: 50).
+2. **Canonical 6-Feature Matrix:** Builds leakage-free feature vectors matching the real-time inference contract: `party_size`, `total_people_ahead`, `hour_of_day`, `day_of_week`, `is_weekend`, and `historical_average_wait`.
+3. **Chronological Evaluation & Hyperparameter Search:** Purged expanding-window cross-validation and chronological train/test split with embargo for in-flight queues. Tunes XGBoost via `RandomizedSearchCV` and benchmarks against training-median and historical-average baselines.
+4. **Candidate Eligibility Gates:** Configurable gates (`--max-test-mae`, `--max-test-rmse`, baseline outperformance). Guardrail strictly marks models trained on synthetic data as ineligible for production.
+5. **Contract-Safe Candidate Verification:** Serializes candidates to `app/infrastructure/ml_models/artifacts/candidates/eta_model_candidate.json`, reloads the booster, validates feature names, ordering, and count, checks metadata, and runs smoke inference without touching or overwriting the active production model.
+6. **MLflow Experiment Tracking:** Persistently logs run parameters, dataset provenance, metrics, code revision git SHA, tags, and candidate artifacts to the MLflow tracking server. Unhandled failures are explicitly recorded as `FAILED`.
+
+### Executing the Training & Retraining Pipeline
+
+#### 1. Retrain on Historical Real Queue Data
+```bash
+uv run python -m scripts.train_eta_model \
+  --dataset-mode real \
+  --collection queue_events \
+  --min-sample-size 100 \
+  --max-test-mae 4.5 \
+  --max-test-rmse 7.5
+```
+
+#### 2. Train on Synthetic Data (CI / Local Verification)
+```bash
+uv run python -m scripts.train_eta_model \
+  --dataset-mode synthetic \
+  --min-sample-size 50 \
+  --n-iter 12
+```
+
+### MLflow Experiment Tracking
+
+The pipeline automatically connects to the configured MLflow server (default: `http://localhost:5000`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MLFLOW_TRACKING_URI` | `http://localhost:5000` | MLflow tracking server endpoint |
+| `MLFLOW_EXPERIMENT_NAME` | `spotq-eta-service` | Experiment grouping for runs |
+
+Start MLflow locally using Docker Compose:
+```bash
+cd spotq-infra
+docker compose up -d mlflow
+```
+Access the tracking UI at `http://localhost:5000` to inspect candidate metrics, parameters, and model artifacts.
+
+---
+
+## S3 Model Registry & Controlled Promotion
+
+- **Guide:** [`docs/model-lifecycle.md`](file:///Users/jeswin07/Documents/Data%20Science%20AI%20ML/Data%20Science%20Btype/SpotQ_ML/spotq-ml-eta-service/docs/model-lifecycle.md)
+- **Endpoints:** `POST /api/v1/eta/admin/promote-candidate`, `POST /api/v1/eta/admin/rollback-model`
+
+SCRUM-1228 implements secure S3 artifact storage, versioned metadata manifests, SHA-256 integrity checks, and controlled promotion of candidate models to live inference serving without downtime.
+
+### Key Capabilities
+
+1. **S3 Artifact Storage**: Stores candidate models in S3 (`s3://<bucket>/ml-models/eta/<version>/eta_model.json`) with companion `manifest.json`. Automatically bootstraps from S3 on initial startup if local model file is absent, and falls back to local staging directory (`S3_LOCAL_STORAGE_DIR`) in offline/dev environments.
+2. **SHA-256 Checksum Verification**: Every artifact is fingerprinted with a SHA-256 digest on upload and verified upon download. Corrupted downloads are rejected and discarded immediately (`HTTP 422`).
+3. **Pre-Promotion Validation Gate**: Isolated validation checks booster loading, 6 canonical features, environment policy (`synthetic` blocked in production), and smoke test inference before activation.
+4. **Authorized Atomic Hot-Swap**: Authorized operators (`X-Admin-Key`) promote candidates via `POST /api/v1/eta/admin/promote-candidate`. Model swap in memory is guarded by an `RLock` for zero-downtime activation. If promotion fails, the active model is 100% preserved.
+5. **Instant Rollback**: Calling `POST /api/v1/eta/admin/rollback-model` restores the previous known-good model version in sub-millisecond time.
+
+### S3 Configuration Options
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AWS_S3_BUCKET` / `S3_BUCKET_NAME` | `spotq-restaurant-files` | S3 bucket storing candidate models |
+| `AWS_REGION` / `S3_REGION` | `ap-south-1` | AWS region |
+| `S3_ARTIFACT_PREFIX` | `ml-models/eta` | S3 key prefix |
+| `S3_ENDPOINT_URL` | `None` | Custom S3 endpoint URL (MinIO / LocalStack) |
+| `ETA_MODEL_ADMIN_KEY` | `None` | Minimum 32-character secret authorizing admin promotion/rollback |
+
+### Verification Scripts
+
+- **`scripts/verify_s3_storage.py`**: Verifies S3 connection, upload, download, SHA-256 integrity verification, and cleanup.
+- **`scripts/test_full_mlops_pipeline.py`**: Runs end-to-end promotion, status check, live prediction, and rollback against S3.
+
+---
+
+## Synthetic Data Generation
+
+**Script:** `scripts/seed_training_data.py`
+
+The generator creates synthetic queue records across multiple mock restaurants. The implemented dataset contains 3,000 records across five mock restaurants.
+
+The synthetic demand model incorporates:
+
+- Lunch peaks between 12:00 and 14:00.
+- Dinner peaks between 19:00 and 21:30.
+- Increased weekend demand.
+- Nonlinear effects from party size and queue workload.
+- Restaurant-specific service characteristics and variability.
+- Chronologically consistent join and completion timestamps.
+
+Each generated record includes synthetic-data identification fields. Stable event identifiers and idempotent insertion logic help prevent duplicate events on repeated seeding.
+
+Before executing the script, inspect its supported arguments and verify the target database and collection. The script writes to MongoDB.
+
+---
+
+## Data Cleaning and Feature Engineering
+
+### Data cleaning
+
+**Module:** `app/infrastructure/ml_models/data_cleaning.py`
+
+The cleaning stage validates queue records and produces diagnostics for accepted and rejected records.
+
+Checks include:
+
+- Missing required values and invalid timestamps.
+- Completion before queue joining.
+- Non-positive waiting times and waiting times exceeding 120 minutes.
+- Invalid party sizes and workload values.
+- Duplicate stable identifiers.
+
+Rejected records must be accounted for with exclusion reasons.
+
+### Canonical feature contract
+
+**Module:** `app/infrastructure/ml_models/features.py`
+
+The model uses six input features in this exact order:
+
+| Position | Feature | Type |
+|---:|---|---|
+| 1 | `party_size` | Integer |
+| 2 | `total_people_ahead` | Integer |
+| 3 | `hour_of_day` | Integer, 0–23 |
+| 4 | `day_of_week` | Integer, Monday = 0 |
+| 5 | `is_weekend` | Integer, 0 or 1 |
+| 6 | `historical_average_wait` | Float |
+
+**Target:** `actual_wait_time_minutes`
+
+Restaurant identity is used to isolate historical statistics but is not automatically included as a numeric model input.
+
+Historical features must only use eligible completed records available strictly before the prediction timestamp. Future observations and the current record's target must not influence feature values.
+
+Training and inference must follow the same feature schema, ordering, data types, and fallback semantics.
+
+---
+
+## Model Training and Evaluation
+
+**Script:** `scripts/train_eta_model.py`
+
+The training pipeline explicitly selects either synthetic or real data mode. It evaluates a historical-average baseline, a training-median baseline, a Random Forest benchmark, and a tuned XGBoost model.
+
+Validation uses chronological holdout evaluation and time-aware cross-validation rather than randomly shuffled time-series splits.
+
+### Train a synthetic candidate
+
+```bash
+uv run python scripts/train_eta_model.py \
+  --dataset-mode synthetic \
+  --timezone-map config/restaurant_timezones.json \
+  --output-dir app/infrastructure/ml_models/artifacts/candidates
+```
+
+This command can regenerate candidate outputs. Review the configured environment and arguments before running it.
+
+### Verified synthetic results
+
+| Model | Holdout MAE | Holdout RMSE | R² |
+|---|---:|---:|---:|
+| Training median | 10.86 min | 15.36 min | -0.0420 |
+| Historical average | 10.80 min | 14.03 min | 0.1309 |
+| Random Forest | 3.08 min | 3.97 min | 0.9306 |
+| Tuned XGBoost | 2.89 min | 3.73 min | 0.9385 |
+
+The XGBoost candidate reduced holdout MAE by approximately 73.26% relative to the historical-average baseline on this synthetic dataset.
+
+These results validate pipeline mechanics and model learning against generated data. They must not be presented as real-world ETA accuracy.
+
+### Candidate artifacts
+
+Training outputs are stored under:
+
+```text
+app/infrastructure/ml_models/artifacts/candidates/
+├── eta_model_candidate.json
+└── eta_training_report.json
+```
+
+The report includes training configuration, cleaning diagnostics, feature information, evaluation results, and model metadata.
+
+The candidate is not automatically promoted to the serving artifact. Its six-feature contract must be checked against the existing inference loader and serving contract before promotion.
+
+---
+
+## Redis Historical Feature Pre-warming
+
+**Script:** `scripts/prewarm_redis_history.py`
+
+**Reader helper:** `app/infrastructure/ml_models/redis_history.py`
+
+The pre-warm script aggregates completed queue records by restaurant, local weekday, and local hour, using the configured timezone mapping.
+
+### Redis key format
+
+```text
+eta:history:{restaurant_id}:{day_of_week}:{hour_of_day}
+```
+
+Values are numeric historical-average waiting times. Supporting metadata records the source and sample count.
+
+### Fallback hierarchy
+
+When an exact historical bucket is unavailable, the reader attempts:
+
+1. Exact restaurant, weekday, and hour.
+2. Same restaurant and weekday.
+3. Same restaurant across available buckets.
+4. Global historical average.
+5. Configured cold-start default of 20 minutes.
+
+The pre-warm script retries Redis connections up to three attempts and reports failure if the connection cannot be established.
+
+### Run pre-warming
+
+```bash
+uv run python scripts/prewarm_redis_history.py \
+  --collection spotq_production \
+  --timezones config/restaurant_timezones.json
+```
+
+### Inspect the report
+
+```bash
+cat app/infrastructure/ml_models/artifacts/candidates/redis_prewarm_report.json
+```
+
+### Verified result
+
+| Metric | Result |
+|---|---:|
+| Input records | 3,000 |
+| Rejected records | 0 |
+| Redis buckets written | 649 |
+| Synthetic-only buckets | 649 |
+| Execution status | Completed |
+
+All synthetic aggregates remain identifiable as synthetic and must not be interpreted as validated live restaurant history.
+
+---
+
+## API Reference & Documentation
+
+The SpotQ ETA service provides RESTful endpoints organized under inference, system observability, model lifecycle management (SCRUM-1228), and monitoring & retraining (SCRUM-1229).
+
+### Endpoint Summary
+
+| Method | Endpoint | Auth | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/healthz` | Public | Basic service readiness / liveness |
+| `GET` | `/health/ready` | Public | Comprehensive health (MongoDB, Redis, RabbitMQ, Loaded Model) |
+| `GET` | `/metrics` | Public | Prometheus observability metrics |
+| `GET` | `/api/v1/eta/predict` | Public | Real-time ETA prediction (with zero-latency logging) |
+| `GET` | `/api/v1/eta/admin/model-status` | `X-Admin-Key` | Inspect active model metadata, SHA-256, and storage mode |
+| `GET` | `/api/v1/eta/admin/candidates` | `X-Admin-Key` | List registered model candidate artifacts in S3 / local |
+| `POST` | `/api/v1/eta/admin/promote-candidate` | `X-Admin-Key` | Atomically hot-swap and promote an authorized candidate model |
+| `POST` | `/api/v1/eta/admin/rollback-model` | `X-Admin-Key` | Instantly revert to previous verified model version |
+| `POST` | `/api/v1/eta/admin/reload-model` | `X-Admin-Key` | Force re-validation and reload of current model |
+| `GET` | `/api/v1/eta/admin/monitoring/status` | `X-Admin-Key` | Inspect latest drift status, error metrics, and lock state |
+| `POST` | `/api/v1/eta/admin/monitoring/evaluate` | `X-Admin-Key` | Run on-demand monitoring cycle across lookback window |
+| `POST` | `/api/v1/eta/admin/monitoring/trigger-retrain` | `X-Admin-Key` | Operator-initiated candidate model retraining |
+
+---
+
+### Detailed Endpoint Specifications
+
+#### 1. Prediction (`GET /api/v1/eta/predict`)
+Computes estimated waiting time in minutes using XGBoost and Redis historical averages. Asynchronously persists prediction features to MongoDB for monitoring without inference latency.
+
+- **Query Parameters:**
+  - `restaurant_id` (str, required): Target restaurant ID.
+  - `total_people_ahead` (int, 0-1000, required): Count of people ahead in queue.
+  - `party_size` (int, 1-100, required): Number of guests in party.
+  - `queue_entry_id` (str, optional): Correlation identifier for eventual completion event.
+
+- **Example Response (200 OK):**
+```json
+{
+  "restaurant_id": "rest_101",
+  "estimated_wait_minutes": 18.5,
+  "confidence_score": null,
+  "timestamp": "2026-11-06T15:00:00.000000+00:00",
+  "fallback_used": false,
+  "prediction_id": "pred_c3d4e5f6a7b81234"
+}
+```
+
+---
+
+#### 2. Monitoring Status (`GET /api/v1/eta/admin/monitoring/status`)
+Inspects active model monitoring health, latest evaluated drift report, rolling error metrics (MAE/RMSE), and retraining state.
+
+- **Headers:** `X-Admin-Key: <secret>`
+- **Example Response (200 OK):**
+```json
+{
+  "status": "operational",
+  "active_model_version": "eta_model_candidate",
+  "is_retraining_locked": false,
+  "latest_evaluation": {
+    "evaluation_id": "eval-8419f2a0-4a81",
+    "evaluated_at": "2026-11-06T01:00:00Z",
+    "lookback_hours": 24,
+    "active_model_version": "eta_model_candidate",
+    "correlation_summary": {
+      "total_predictions": 500,
+      "total_completed_outcomes": 480,
+      "correlated_count": 465,
+      "uncorrelated_predictions_count": 35,
+      "uncorrelated_outcomes_count": 15
+    },
+    "data_quality_report": {
+      "total_evaluated": 465,
+      "valid_count": 462,
+      "excluded_count": 3,
+      "is_sufficient_for_evaluation": true
+    },
+    "drift_report": {
+      "baseline_version": "baseline_v1",
+      "sample_count": 462,
+      "has_significant_drift": false,
+      "drifted_features_count": 0,
+      "feature_results": {
+        "party_size": { "psi_score": 0.031, "drift_level": "stable", "is_drifted": false },
+        "total_people_ahead": { "psi_score": 0.045, "drift_level": "stable", "is_drifted": false },
+        "hour_of_day": { "psi_score": 0.022, "drift_level": "stable", "is_drifted": false },
+        "day_of_week": { "psi_score": 0.015, "drift_level": "stable", "is_drifted": false },
+        "is_weekend": { "psi_score": 0.009, "drift_level": "stable", "is_drifted": false },
+        "historical_average_wait": { "psi_score": 0.054, "drift_level": "stable", "is_drifted": false }
+      }
+    },
+    "performance_report": {
+      "overall_mae_minutes": 2.74,
+      "overall_rmse_minutes": 3.89,
+      "has_degradation": false
+    }
+  },
+  "latest_retraining": null
+}
+```
+
+---
+
+#### 3. Monitoring Evaluation (`POST /api/v1/eta/admin/monitoring/evaluate`)
+Performs an on-demand evaluation cycle over predictions and completed queue events.
+
+- **Headers:** `X-Admin-Key: <secret>`
+- **Request Body:**
+```json
+{
+  "lookback_hours": 24,
+  "min_samples": 30,
+  "restaurant_id": null,
+  "auto_trigger": true,
+  "dataset_mode": "synthetic"
+}
+```
+
+---
+
+#### 4. Manual Candidate Retraining (`POST /api/v1/eta/admin/monitoring/trigger-retrain`)
+Operator-authorized candidate retraining trigger. Retraining strictly produces a candidate artifact in S3 / candidates registry; it **never** auto-promotes the candidate to active serving.
+
+- **Headers:** `X-Admin-Key: <secret>`
+- **Request Body:**
+```json
+{
+  "reason": "Scheduled retraining for new seasonal baseline",
+  "approver_id": "operator_jeswin",
+  "dataset_mode": "synthetic"
+}
+```
+
+---
+
+## Model Monitoring, Drift Detection & Retraining Triggers
+
+**Documentation:** `docs/model-monitoring-and-retraining.md`  
+**Evaluation Script:** `scripts/run_model_monitoring.py`  
+
+### Workflow Highlights
+1. **Prediction-to-Outcome Correlation (AC1):** Matches inference predictions in MongoDB `prediction_logs` with ground truth queue completions in `queue_events` via exact `queue_entry_id` or temporal proximity fallback ($\pm 10$ minutes).
+2. **Data Quality & Exclusion Guard (AC2):** Filters missing/non-finite features, out-of-bounds wait times ($> 120$ min), duplicate queue entries, and verifies sample count meets minimum statistical threshold ($N_{min} \ge 30$).
+3. **Statistical Feature Drift Detection (AC3):** Calculates Population Stability Index (PSI) with Laplace smoothing across all 6 canonical features against the reference baseline (`config/feature_drift_baseline.json`). Flags significant drift when $\text{PSI} \ge 0.25$.
+4. **Outcome Performance Monitoring (AC4):** Calculates rolling MAE and RMSE from completed wait times, strictly attributed to generating model versions.
+5. **Configurable Retraining Triggers (AC5):** Enforces 4-hour cooldown and concurrency lock (`asyncio.Lock`) preventing overlapping training runs.
+6. **Strict Lifecycle Safety Boundary (AC6):** Retraining produces **candidate models only**. The active production model is never mutated or hot-swapped without explicit operator promotion via `/api/v1/eta/admin/promote-candidate`.
+
+---
+
+## Running the API
+
+The FastAPI application entry point is `app.main:app`.
+
+For local development, with the required environment variables configured:
+
+```bash
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+With Infisical:
+
+```bash
+infisical run --projectId <your-project-id> --env=dev -- uv run uvicorn app.main:app --reload --port 8000
+```
+
+The verified development endpoints are:
+
+- `GET /healthz`
+- `GET /api/v1/eta/predict`
+- Swagger UI at `/docs`
+- OpenAPI schema at `/openapi.json`
+
+These are local development URLs when the service runs on `127.0.0.1:8000`.
+
+Development serving verification: the six-feature synthetic candidate loaded successfully, and the prediction endpoint returned HTTP 200. The existing seven-feature `eta_model_v1.json` artifact is incompatible with the canonical six-feature serving contract and remains uncommitted. The successful development test does not establish real-world model accuracy.
+
+---
+
+## RabbitMQ Event Consumer
+
+**Consumer Implementation:** `app/infrastructure/queue/rabbitmq_consumer.py`  
+**Standalone Worker Entrypoint:** `scripts/run_rabbitmq_worker.py`  
+**Integration Documentation:** `docs/mern-rabbitmq-integration.md`  
+
+The RabbitMQ consumer processes completed queue events published by the MERN backend over AMQP 0-9-1. It is embedded directly in the FastAPI application lifespan (starting and shutting down automatically with `uvicorn`), or can be run as a standalone worker process.
+
+### Architecture
+
+```text
+MERN Backend (Producer)
+    │
+    │ Publish AMQP message (Routing key: queue.event.completed)
+    ▼
+RabbitMQ Broker
+Exchange: spotq.events (topic)
+    │
+    ▼
+Durable Queue: ml-eta-queue
+    │ (Dead-lettered on failure to ml-eta-queue.dlq)
+    ▼
+Python RabbitMQ Consumer (aio-pika)
+    │
+    ├── Decode JSON
+    ├── Validate event schema & timestamps
+    ├── Auto-compute actual_wait_time_minutes if omitted
+    ├── Verify idempotency via queue_entry_id
+    ├── Persist to MongoDB (queue_events)
+    ├── ACK on successful persistence
+    └── Reject (requeue=False) poison pills / validation errors to DLQ
+    │
+    ▼
+MongoDB: queue_events
+```
+
+### Running the Consumer
+
+When the FastAPI server starts, the consumer automatically initializes and runs in the background.
+
+To run the consumer as a dedicated standalone background worker:
+
+```bash
+uv run python scripts/run_rabbitmq_worker.py
+```
+
+With Infisical:
+
+```bash
+infisical run --projectId <your-project-id> --env=dev -- uv run python scripts/run_rabbitmq_worker.py
+```
+
+### Event Validation & Auto-Calculation
+
+The event schema is defined in `app/application/schemas/queue_event.py`.
+
+Each event includes:
+
+| Field | Validation |
+|---|---|
+| `queue_entry_id` | Non-empty string, maximum 128 characters |
+| `restaurant_id` | Non-empty string, maximum 128 characters |
+| `party_size` | Integer, 1–100 |
+| `joined_at` | Valid ISO 8601 timestamp with timezone |
+| `completed_at` | Valid ISO 8601 timestamp with timezone, after joining |
+| `actual_wait_time_minutes` | Optional positive float (max 120). If omitted, automatically computed from `completed_at - joined_at` |
+| `total_people_ahead_at_join` | Integer, 0–1000 |
+
+### Persistence, Reliability, and DLQ Handling
+
+The consumer enforces strict message reliability:
+
+- **New event:** Validated and persisted to MongoDB `queue_events`, then explicitly ACKed.
+- **Auto wait-time calculation:** If MERN omits `actual_wait_time_minutes`, the consumer calculates it accurately from `(completed_at - joined_at)` in minutes.
+- **Identical duplicate:** Acknowledged (`ACK`) idempotently without inserting duplicate records.
+- **Conflicting duplicate or invalid schema:** Rejected without requeue (`requeue=False`), routing the message to `ml-eta-queue.dlq` for operator inspection.
+- **Transient database error:** NACKed with requeue (`requeue=True`) so RabbitMQ redelivers the message when the database recovers.
+- **Connection loss:** Consumer enters an automatic reconnection loop with exponential backoff until the RabbitMQ broker recovers.
+
+### Retry and failed-job handling
+
+The consumer classifies invalid payloads and conflicting duplicates as permanent failures using BullMQ's `UnrecoverableError`. Unexpected errors are propagated to the queue library for retry handling.
+
+Retry attempts, backoff, and failed-job retention must be configured by the producer when it creates jobs. The Python consumer does not retroactively define those job options.
+
+Failed jobs should remain available according to the agreed retention policy so they can be inspected and, when appropriate, replayed.
+
+### Local verification
+
+The following scenarios have been tested locally using a Python BullMQ producer and the development Redis and MongoDB services:
+
+- Valid event persisted successfully and the job reached the completed state.
+- Identical duplicate did not create a second MongoDB record.
+- Conflicting duplicate failed permanently, and the original record remained unchanged.
+- Invalid payload failed permanently.
+- Unit tests confirmed that unexpected processing errors propagate for retry handling.
+
+**Integration status:** Python-side queue processing and persistence are verified. The MERN producer is still under development, so cross-language integration has not yet been confirmed. The actual Node.js job name, payload, retry/backoff configuration, and failed-job retention must be checked when the producer becomes available.
+
+---
+
+## Testing and Code Quality
+
+### Run unit tests
+
+```bash
+uv run pytest tests/unit -q
+```
+
+The latest verified unit-test run completed with **147 passed** and zero warnings.
+
+### Run the full test suite
+
+```bash
+uv run pytest -q
+```
+
+The full suite may include integration tests requiring external services.
+
+### Run integration tests
+
+```bash
+uv run pytest tests/integration -v
+```
+
+Ensure the required MongoDB and Redis credentials are configured before executing integration tests.
+
+### Run linting
+
+```bash
+uv run ruff check app/ scripts/ tests/
+```
+
+### Check whitespace errors
+
+```bash
+git diff --check
+```
+
+The latest SCRUM-1228 verification confirmed that Ruff, Black formatting, and `git diff --check` pass, with all 147 unit tests passing.
+
+---
+
+## Docker
+
+The repository includes a `Dockerfile` and `docker-compose.dev.yml`.
+
+### Build the image
+
+```bash
+docker build -t spotq-ml-eta-service:latest .
+```
+
+### Run the API container
+
+```bash
+docker run --rm -p 8000:8000 spotq-ml-eta-service:latest
+```
+
+Supply the required configuration through the approved secret-management mechanism or runtime environment. Do not put service tokens directly in the README or commit them to source control.
+
+Development verification confirmed `GET /healthz`, `GET /api/v1/eta/predict`, and `/openapi.json` returned HTTP 200. The Docker API container previously failed to start because its Infisical runtime configuration did not provide the required project configuration/authentication. Container startup remains unresolved; do not consider Docker deployment verified.
+
+The BullMQ consumer must also be deployed as a separately managed process with access to the configured Redis and MongoDB instances.
+
+---
+
+## Branching and CI
+
+The repository uses protected integration and release branches:
+
+- `main` — production release branch.
+- `staging` — pre-production validation branch.
+- `development` — integration branch for active feature work.
+
+Root-level branch protection JSON files document repository governance:
+
+- `Development Protection.json`
+- `Staging Protection.json`
+- `Main Protection.json`
+
+### Branch naming conventions
+
+| Work type | Convention |
+|---|---|
+| Features | `feat/<feature-name>` |
+| Bug fixes | `fix/<issue-name>` |
+| Refactoring | `refactor/<module-name>` |
+| Documentation | `docs/<topic>` |
+| Maintenance | `chore/<task>` |
+
+The documented CI workflow is `.github/workflows/ci.yml`. When present and configured, CI should validate dependencies, linting, unit tests, and the container build for the configured target branches.
+
+---
+
+## Current Limitations and Next Steps
+
+The SCRUM-1602 implementation establishes the data-to-model workflow. SCRUM-1608 adds a locally verified BullMQ consumer, but the MERN producer integration remains pending.
+
+The following items must be verified before treating the model and ingestion integration as production-ready:
+
+1. **Artifact compatibility:** The six-feature development candidate loaded successfully against the canonical serving contract. The separate seven-feature serving artifact remains incompatible and must not be promoted without deliberate schema reconciliation.
+2. **Artifact promotion:** Promote a candidate only after validation succeeds. A failed candidate must not overwrite an existing valid serving artifact.
+3. **Training provenance:** Regenerate the candidate and report together when the report must identify the current implementation commit as the exact training code version.
+4. **Real-data evaluation:** Evaluate on representative, trustworthy restaurant outcomes before making real-world accuracy claims.
+5. **Data integration:** Verify the configured MongoDB collection, Redis keys, fallback behavior, and intended service loading path in the target environment.
+6. **Performance verification:** Twenty sequential loopback requests were below 50 ms, but a representative concurrent load test is still required before claiming the latency target is met.
+7. **Fallback investigation:** The live prediction returned `fallback_used: true`; investigate the historical-feature lookup and confirm the intended Redis instance and fallback behavior.
+8. **Container startup:** Resolve Infisical configuration for the Docker API container and repeat health and prediction checks inside the container.
+9. **BullMQ interoperability:** Validate the Node.js producer against the Python consumer using `ml-eta-queue`, the `bull` prefix, the actual job name and payload, and the producer's retry/backoff and failed-job retention settings.
+10. **Queue deployment:** Run the worker as a separately managed process with appropriate Redis and MongoDB configuration.
+11. **MongoDB index readiness:** Confirm existing production records contain no duplicate `queue_entry_id` values before creating the unique index.
+12. **Operational resilience:** Test worker recovery after Redis or MongoDB interruptions, graceful shutdown, and replay of retained failed jobs.
+
+### Verification summary
+
+- MongoDB connectivity: verified in development.
+- Redis connectivity: verified in development.
+- Synthetic pre-warm: completed, 649 buckets written.
+- Candidate XGBoost model loading: verified.
+- SCRUM-1608 unit tests: latest run, 100 passed.
+- Ruff and whitespace checks: passed on the current feature branch.
+- Queue event persistence: verified using a Python producer and consumer.
+- Duplicate and invalid event handling: verified locally.
+- MERN producer interoperability: pending.
+- Real-world ETA accuracy: not established.
+- Six-feature candidate loading in development: verified.
+- Seven-feature artifact compatibility: unresolved; artifact remains uncommitted.
+- Docker API startup: unresolved.
+- Live prediction historical-feature fallback: observed; root cause not yet confirmed.
